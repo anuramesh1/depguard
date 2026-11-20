@@ -1,0 +1,16 @@
+# Keep the build context small and never send secrets or state into an image.
+.git
+.idea
+.vscode
+target
+docs
+infra
+scripts
+samples
+*.md
+.env
+.env.*
+*.pem
+*.key
+*.tfstate*
+.DS_Store

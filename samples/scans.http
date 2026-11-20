@@ -1,0 +1,20 @@
+### Scan a pom with well-known vulnerable dependencies (live OSV data)
+POST http://localhost:8080/api/scans
+Content-Type: application/xml
+
+< ./vulnerable-pom.xml
+
+### Scan a pom with current dependencies
+POST http://localhost:8080/api/scans
+Content-Type: application/xml
+
+< ./clean-pom.xml
+
+### Invalid input returns a 400 problem detail
+POST http://localhost:8080/api/scans
+Content-Type: application/xml
+
+<html/>
+
+### Health check
+GET http://localhost:8080/actuator/health

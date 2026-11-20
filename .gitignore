@@ -1,0 +1,45 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+credentials*
+secrets*
+application-local.*
+application-secret*.*
+
+# --- Cloud / infrastructure state ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl.bak
+cdk.out/
+.aws/
+
+# --- Interview prep: local only ---
+docs/interview/
+
+# --- Local data ---
+data/
+*.db
+*.sqlite
+*.log
+logs/
+
+# --- Build output ---
+target/
+build/
+!.mvn/wrapper/maven-wrapper.jar
+HELP.md
+
+# --- IDE / OS ---
+.idea/
+*.iml
+.vscode/
+.DS_Store

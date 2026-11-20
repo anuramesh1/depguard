@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: depguard
+  threads:
+    virtual:
+      enabled: true          # Java 21: each request runs on a cheap virtual thread
+  mvc:
+    problemdetails:
+      enabled: true          # framework errors (404, 415, ...) also return problem-detail JSON
+
+depguard:
+  osv:
+    base-url: https://api.osv.dev
+    connect-timeout: 3s
+    read-timeout: 10s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info # expose only what a load balancer needs
