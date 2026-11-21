@@ -1,7 +1,7 @@
 """Render DepGuard's AWS architecture diagram with service icons (depguard-architecture-aws.svg/.png).
 
 Same drawing style as the payroll-ai-strands and RAG_Hybrid_Search diagrams.
-Three stories: scanning a pom.xml, deploying, and what later phases add.
+Three stories: scanning and triaging a pom.xml, deploying, and what later phases add.
 
     python3 docs/architecture/architecture_diagram_aws.py    # the PNG needs rsvg-convert (brew install librsvg)
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "depguard-architecture-aws"
-W, H = 1600, 760
+W, H = 1600, 950
 
 BLUE, PURPLE, GREEN, GREY, INK, ORANGE = "#1C7ED6", "#7048E8", "#2B8A3E", "#495057", "#212529", "#D9480F"
 FONT = "Helvetica Neue, Helvetica, Arial, sans-serif"
@@ -91,11 +91,12 @@ def arrow(d, color, label=None, at=None, anchor="middle", dashed=False):
 
 # ------------------------------------------------------------------ title
 text(W / 2, 50, "DepGuard  ·  Java dependency vulnerability triage, serverless on AWS", size=30, weight="bold")
-text(W / 2, 84, "A pom.xml goes in; vulnerable dependencies ranked by severity, with the version to upgrade to, come out.",
+text(W / 2, 84, "A pom.xml goes in; vulnerable dependencies ranked by risk, safe upgrade versions and an AI triage of what to fix first come out.",
      size=17, color=GREY)
 
-# ------------------------------------------------------------------ story 1: scanning a pom.xml
-panel(30, 110, 1540, 400, "①  Scanning a pom.xml  —  about 2 seconds", "#F8FBFF", BLUE)
+# ------------------------------------------------------------------ story 1: scanning and triaging a pom.xml
+panel(30, 110, 1540, 590, "①  Scanning and triaging a pom.xml  —  a scan takes ~2 s, an AI triage ~12 s",
+      "#F8FBFF", BLUE)
 
 icon("users", 85, 320, ["Developer", "curl · IntelliJ"], size=72)
 arrow("M125 310 L 247 310", BLUE, "pom.xml", (186, 298))
@@ -104,47 +105,63 @@ icon("api-gateway", 285, 320, ["Amazon API Gateway", "HTTP API · HTTPS", "throt
 arrow("M320 320 L 376 320", BLUE)
 
 # Lambda: Spring Boot runs inside, unchanged
-panel(380, 150, 800, 340, "", "#FFF4E6", ORANGE)
+panel(380, 150, 800, 430, "", "#FFF4E6", ORANGE)
 image("lambda", 398, 164, 42)
 text(452, 182, "AWS Lambda  ·  Java 21  ·  ARM64  ·  SnapStart", size=17, color=ORANGE, weight="bold", anchor="start")
 text(452, 203, "alias “live” → newest version  ·  Spring Boot runs inside, unchanged", size=13.5, anchor="start")
 image("spring", 1128, 164, 36)
 
+# Row 1: request handling and the deterministic scan
 step(400, 232, 240, 80, "StreamLambdaHandler", ["API Gateway event →", "servlet request"], ORANGE, "#FFFFFF")
 arrow("M640 272 L 666 272", ORANGE)
-step(670, 232, 240, 80, "ScanController", ["POST /api/scans", "size limit · errors as JSON"], ORANGE, "#FFFFFF")
+step(670, 232, 240, 80, "Controllers", ["POST /api/scans", "POST /api/triage (API key)"], ORANGE, "#FFFFFF")
 arrow("M910 272 L 936 272", ORANGE)
-step(940, 232, 220, 80, "ScanService", ["ranks by severity,", "picks the safe upgrade"], ORANGE, "#FFFFFF")
+step(940, 232, 220, 80, "ScanService", ["parses the pom (no XXE),", "ranks, picks upgrades"], ORANGE, "#FFFFFF")
 
-step(670, 372, 240, 80, "PomParser", ["safe XML (blocks XXE),", "resolves ${versions}"], ORANGE, "#FFFFFF")
-step(940, 372, 220, 80, "OsvClient", ["1 batch query, then", "parallel fetches"], ORANGE, "#FFFFFF")
-arrow("M1000 312 L 1000 342 L 790 342 L 790 368", ORANGE)
-arrow("M1100 312 L 1100 368", ORANGE)
-text(405, 395, ["Locally: ./mvnw spring-boot:run", "serves the same controller", "on Tomcat :8080 (no Lambda)."],
+# Row 2: the agent, and the advisory client
+step(670, 352, 240, 80, "TriageAgent", ["Spring AI ChatClient,", "3 tools · citation check"], PURPLE, "#F3F0FF")
+step(940, 352, 220, 80, "OsvClient", ["1 batch query, then", "parallel fetches"], ORANGE, "#FFFFFF")
+arrow("M790 312 L 790 348", ORANGE)
+arrow("M1050 312 L 1050 348", ORANGE)
+text(405, 380, ["Locally: ./mvnw spring-boot:run", "serves the same controllers", "on Tomcat :8080 (no Lambda)."],
      size=13.5, color=GREY, anchor="start")
 
-# Right column: logs and the open data source
-arrow("M1180 252 L 1306 252", GREY, "logs", (1243, 240), dashed=True)
-icon("cloudwatch", 1350, 252, ["Amazon CloudWatch", "logs · 7-day retention"], size=60)
-arrow("M1160 412 L 1308 412", GREEN, "HTTPS", (1234, 400))
-badge(1350, 412, "OSV", ["OSV.dev API", "live advisory data, free"], GREEN, "#EBFBEE")
+# Row 3: exploit-signal clients, used only by the agent's tools
+step(940, 472, 220, 80, "EpssClient · KevClient", ["batched lookup,", "KEV feed cached 6 h"], ORANGE, "#FFFFFF")
+arrow("M910 372 L 925 372 L 925 292 L 936 292", PURPLE)   # tool: findVulnerabilities -> the scan
+arrow("M910 412 L 925 412 L 925 512 L 936 512", PURPLE)   # tools: EPSS + KEV
+text(778, 470, ["tools: findVulnerabilities,", "getExploitProbability,", "checkKnownExploited"],
+     size=13, color=PURPLE, anchor="end")
+
+# The model, below the Lambda
+arrow("M790 432 L 790 612", PURPLE, "Converse API", (780, 600), anchor="end")
+image("bedrock", 765, 615, 50)
+text(830, 636, "Amazon Bedrock", size=16, color=PURPLE, weight="bold", anchor="start")
+text(830, 656, "Claude Haiku 4.5  ·  IAM role, no API key to store", size=13.5, anchor="start")
+
+# Right column: logs and the open data sources
+arrow("M1180 252 L 1351 252", GREY, "logs", (1265, 240), dashed=True)
+icon("cloudwatch", 1385, 252, ["Amazon CloudWatch", "logs · 7-day retention"], size=60)
+arrow("M1160 392 L 1266 392", GREEN, "HTTPS", (1213, 380))
+step(1270, 352, 230, 80, "OSV.dev API", ["advisories (incl. GitHub", "Advisory Database), free"], GREEN, "#EBFBEE")
+arrow("M1160 512 L 1266 512", GREEN, "HTTPS", (1213, 500))
+step(1270, 472, 230, 80, "FIRST EPSS · CISA KEV", ["exploit probability ·", "known exploited, free"], GREEN, "#EBFBEE")
 
 # ------------------------------------------------------------------ story 2: deploying
-panel(30, 530, 760, 210, "②  Deploying  —  scripts/deploy.sh, about 3–5 minutes", "#F8F9FA", GREY)
-icon("apachemaven", 120, 625, ["./mvnw -Plambda package", "tests + Lambda zip"], size=50, label_size=14)
-arrow("M210 625 L 266 625", GREY)
-icon("terraform", 320, 625, ["Terraform", "infra/serverless"], size=50, label_size=14)
-arrow("M370 625 L 446 625", GREY)
-icon("lambda", 500, 625, ["New Lambda version", "SnapStart snapshot"], size=50, label_size=14)
-arrow("M555 625 L 596 625", GREY)
-step(600, 590, 170, 72, "Health check", ["GET /actuator/health", "prints the URL"], GREY, "#FFFFFF")
+panel(30, 720, 760, 210, "②  Deploying  —  scripts/deploy.sh, about 3–5 minutes", "#F8F9FA", GREY)
+icon("apachemaven", 120, 815, ["./mvnw -Plambda package", "tests + Lambda zip"], size=50, label_size=14)
+arrow("M210 815 L 266 815", GREY)
+icon("terraform", 320, 815, ["Terraform", "zip → S3 → Lambda"], size=50, label_size=14)
+arrow("M370 815 L 446 815", GREY)
+icon("lambda", 500, 815, ["New Lambda version", "SnapStart snapshot"], size=50, label_size=14)
+arrow("M555 815 L 596 815", GREY)
+step(600, 780, 170, 72, "Health check", ["GET /actuator/health", "prints URL + key cmd"], GREY, "#FFFFFF")
 
 # ------------------------------------------------------------------ story 3: later phases
-panel(810, 530, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
-icon("bedrock", 905, 625, ["Amazon Bedrock", "phase 2 · AI agent"], size=50, label_size=14)
-icon("aurora", 1095, 625, ["Aurora Serverless v2", "phase 3 · pgvector"], size=50, label_size=14)
-icon("langfuse", 1285, 625, ["Langfuse", "phase 5 · LLM traces"], size=50, label_size=14)
-icon("springsecurity", 1475, 625, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
+panel(810, 720, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
+icon("aurora", 940, 815, ["Aurora Serverless v2", "phase 3 · pgvector RAG"], size=50, label_size=14)
+icon("langfuse", 1190, 815, ["Langfuse", "phase 5 · LLM traces"], size=50, label_size=14)
+icon("springsecurity", 1440, 815, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
 
 # ------------------------------------------------------------------ write
 markers = "".join(

@@ -2,7 +2,7 @@
 # Deploys DepGuard to AWS as a serverless app: API Gateway (HTTP API) -> Lambda (Java 21, SnapStart).
 # Re-run it any time to ship a new version of the code.
 #
-# Cost: about $0 while idle; roughly $0.00003 per scan. Run scripts/teardown.sh to remove it all.
+# Cost: about $0 while idle; ~$0.00003 per scan, ~$0.015 per AI triage. Run scripts/teardown.sh to remove it all.
 #
 # Usage:   scripts/deploy.sh
 # Options (environment variables):
@@ -62,10 +62,14 @@ cat <<EOF
 
 DepGuard is live: $URL   (Lambda version $VERSION)
 
-Try it:
+Scan (free, no key):
   curl -s -X POST $URL/api/scans -H 'Content-Type: application/xml' --data-binary @samples/vulnerable-pom.xml
 
+AI triage (needs the API key; each call costs about \$0.015 in Bedrock tokens):
+  KEY=\$(terraform -chdir=infra/serverless output -raw api_key)
+  curl -s -X POST $URL/api/triage -H "X-Api-Key: \$KEY" -H 'Content-Type: application/xml' --data-binary @samples/vulnerable-pom.xml
+
 Logs:      aws logs tail /aws/lambda/depguard --follow --region $REGION
-Cost:      about \$0 while idle. The URL is public but throttled (5 req/s).
+Cost:      about \$0 while idle. The URL is public but throttled (5 req/s); /api/triage needs the key.
 Tear down: scripts/teardown.sh
 EOF

@@ -42,8 +42,11 @@ public class ScanService {
 
     public ScanReport scan(String pomXml) {
         ParsedPom pom = pomParser.parse(pomXml);
-        List<Dependency> dependencies = pom.dependencies();
+        return scanDependencies(pom.dependencies(), pom.skipped());
+    }
 
+    /** Scans dependencies that are already known. Also used by the agent's findVulnerabilities tool. */
+    public ScanReport scanDependencies(List<Dependency> dependencies, List<String> skipped) {
         // 1. One batched call: advisory IDs for every dependency.
         List<List<String>> idsPerDependency = osvClient.findVulnerabilityIds(dependencies);
 
@@ -63,7 +66,7 @@ public class ScanService {
         }
         findings.sort(Comparator.comparing(Finding::worstSeverity));
 
-        return new ScanReport(dependencies.size(), findings.size(), findings, pom.skipped(), Instant.now());
+        return new ScanReport(dependencies.size(), findings.size(), findings, skipped, Instant.now());
     }
 
     /**

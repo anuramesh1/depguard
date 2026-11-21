@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import software.amazon.awssdk.core.exception.SdkException;
 
 /**
  * Turns our exceptions into RFC 9457 "problem detail" JSON responses.
@@ -31,6 +32,16 @@ public class ApiExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.SERVICE_UNAVAILABLE, "The vulnerability database is unavailable. Try again shortly.");
         problem.setTitle("Upstream unavailable");
+        return problem;
+    }
+
+    /** Bedrock errors: throttling, no model access, timeouts, expired credentials. */
+    @ExceptionHandler(SdkException.class)
+    ProblemDetail modelUnavailable(SdkException e) {
+        log.warn("Bedrock call failed", e);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE, "The AI model is unavailable right now. Try again shortly.");
+        problem.setTitle("Model unavailable");
         return problem;
     }
 }

@@ -16,6 +16,12 @@ variable "package_path" {
   default     = "../../target/depguard-lambda.zip"
 }
 
+variable "model_id" {
+  description = "Bedrock model (inference profile) the triage agent uses. Must be enabled for your account."
+  type        = string
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
 variable "memory_mb" {
   description = "Lambda memory. Lambda gives CPU in proportion to memory; 1024 MB suits Spring Boot."
   type        = number

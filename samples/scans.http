@@ -10,6 +10,12 @@ Content-Type: application/xml
 
 < ./clean-pom.xml
 
+### AI triage: what to upgrade first (needs AWS credentials with Bedrock access; costs ~$0.015)
+POST http://localhost:8080/api/triage?question=What should I fix this week?
+Content-Type: application/xml
+
+< ./vulnerable-pom.xml
+
 ### Invalid input returns a 400 problem detail
 POST http://localhost:8080/api/scans
 Content-Type: application/xml

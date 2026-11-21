@@ -22,7 +22,7 @@ application-secret*.*
 cdk.out/
 .aws/
 
-# --- Interview prep: local only ---
+# --- Private notes: local only ---
 docs/interview/
 
 # --- Local data ---

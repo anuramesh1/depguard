@@ -12,6 +12,12 @@ output "live_version" {
   value       = aws_lambda_alias.live.function_version
 }
 
+output "api_key" {
+  description = "Send as the X-Api-Key header to call /api/triage."
+  value       = random_password.api_key.result
+  sensitive   = true
+}
+
 output "log_group" {
   value = aws_cloudwatch_log_group.app.name
 }
