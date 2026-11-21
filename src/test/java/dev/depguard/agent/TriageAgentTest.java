@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 import dev.depguard.agent.tools.ExploitTools;
+import dev.depguard.agent.tools.KnowledgeTools;
 import dev.depguard.agent.tools.VulnerabilityTools;
 import dev.depguard.dependency.PomParser;
 import java.util.ArrayList;
@@ -52,6 +53,7 @@ class TriageAgentTest {
                 new PomParser(),
                 mock(VulnerabilityTools.class),
                 mock(ExploitTools.class),
+                mock(KnowledgeTools.class),
                 new ClassPathResource("prompts/triage-system.st"),
                 new ClassPathResource("prompts/triage-user.st"),
                 "fake-model");

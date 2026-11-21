@@ -1,7 +1,7 @@
 """Render DepGuard's AWS architecture diagram with service icons (depguard-architecture-aws.svg/.png).
 
 Same drawing style as the payroll-ai-strands and RAG_Hybrid_Search diagrams.
-Three stories: scanning and triaging a pom.xml, deploying, and what later phases add.
+Three stories: scanning and triaging a pom.xml (with the RAG knowledge base), deploying, and what later phases add.
 
     python3 docs/architecture/architecture_diagram_aws.py    # the PNG needs rsvg-convert (brew install librsvg)
 
@@ -95,7 +95,7 @@ text(W / 2, 84, "A pom.xml goes in; vulnerable dependencies ranked by risk, safe
      size=17, color=GREY)
 
 # ------------------------------------------------------------------ story 1: scanning and triaging a pom.xml
-panel(30, 110, 1540, 590, "①  Scanning and triaging a pom.xml  —  a scan takes ~2 s, an AI triage ~12 s",
+panel(30, 110, 1540, 590, "①  Scanning and triaging a pom.xml  —  a scan takes ~2 s, an AI triage ~13 s",
       "#F8FBFF", BLUE)
 
 icon("users", 85, 320, ["Developer", "curl · IntelliJ"], size=72)
@@ -119,25 +119,33 @@ arrow("M910 272 L 936 272", ORANGE)
 step(940, 232, 220, 80, "ScanService", ["parses the pom (no XXE),", "ranks, picks upgrades"], ORANGE, "#FFFFFF")
 
 # Row 2: the agent, and the advisory client
-step(670, 352, 240, 80, "TriageAgent", ["Spring AI ChatClient,", "3 tools · citation check"], PURPLE, "#F3F0FF")
+step(670, 352, 240, 80, "TriageAgent", ["Spring AI ChatClient,", "4 tools · citation check"], PURPLE, "#F3F0FF")
 step(940, 352, 220, 80, "OsvClient", ["1 batch query, then", "parallel fetches"], ORANGE, "#FFFFFF")
 arrow("M790 312 L 790 348", ORANGE)
 arrow("M1050 312 L 1050 348", ORANGE)
-text(405, 380, ["Locally: ./mvnw spring-boot:run", "serves the same controllers", "on Tomcat :8080 (no Lambda)."],
+text(405, 345, ["Locally: ./mvnw spring-boot:run", "serves the same controllers on", "Tomcat :8080; Postgres in Docker."],
      size=13.5, color=GREY, anchor="start")
 
 # Row 3: exploit-signal clients, used only by the agent's tools
 step(940, 472, 220, 80, "EpssClient · KevClient", ["batched lookup,", "KEV feed cached 6 h"], ORANGE, "#FFFFFF")
 arrow("M910 372 L 925 372 L 925 292 L 936 292", PURPLE)   # tool: findVulnerabilities -> the scan
 arrow("M910 412 L 925 412 L 925 512 L 936 512", PURPLE)   # tools: EPSS + KEV
-text(778, 470, ["tools: findVulnerabilities,", "getExploitProbability,", "checkKnownExploited"],
-     size=13, color=PURPLE, anchor="end")
+text(780, 458, ["tools:", "findVulnerabilities", "getExploitProbability", "checkKnownExploited", "searchAdvisories"],
+     size=12.5, color=PURPLE, anchor="end")
 
-# The model, below the Lambda
+# Row 3, left: the RAG retriever (tool: searchAdvisories)
+step(400, 472, 240, 80, "HybridRetriever", ["Titan query embedding,", "pgvector + full-text, RRF"], PURPLE, "#F3F0FF")
+arrow("M670 420 L 520 420 L 520 468", PURPLE)
+
+# The model and the knowledge base, below the Lambda
 arrow("M790 432 L 790 612", PURPLE, "Converse API", (780, 600), anchor="end")
 image("bedrock", 765, 615, 50)
 text(830, 636, "Amazon Bedrock", size=16, color=PURPLE, weight="bold", anchor="start")
-text(830, 656, "Claude Haiku 4.5  ·  IAM role, no API key to store", size=13.5, anchor="start")
+text(830, 656, "Claude Haiku 4.5 (agent)  ·  Titan v2 (embeddings)  ·  IAM role", size=13.5, anchor="start")
+arrow("M520 552 L 520 612", PURPLE, "RDS Data API", (510, 600), anchor="end")
+image("aurora", 495, 615, 50)
+text(555, 636, "Aurora Serverless v2", size=16, color=PURPLE, weight="bold", anchor="start")
+text(555, 656, "pgvector · pauses idle", size=13.5, anchor="start")
 
 # Right column: logs and the open data sources
 arrow("M1180 252 L 1351 252", GREY, "logs", (1265, 240), dashed=True)
@@ -156,10 +164,12 @@ arrow("M370 815 L 446 815", GREY)
 icon("lambda", 500, 815, ["New Lambda version", "SnapStart snapshot"], size=50, label_size=14)
 arrow("M555 815 L 596 815", GREY)
 step(600, 780, 170, 72, "Health check", ["GET /actuator/health", "prints URL + key cmd"], GREY, "#FFFFFF")
+text(50, 912, "Then once (and to refresh): scripts/ingest.sh aws  —  OSV export + migration guides → Titan embeddings → Aurora",
+     size=13.5, color=GREY, anchor="start")
 
 # ------------------------------------------------------------------ story 3: later phases
 panel(810, 720, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
-icon("aurora", 940, 815, ["Aurora Serverless v2", "phase 3 · pgvector RAG"], size=50, label_size=14)
+badge(940, 805, "4", ["Golden-set evals", "phase 4 · OSV ground truth + judge"], PURPLE, "#F3F0FF")
 icon("langfuse", 1190, 815, ["Langfuse", "phase 5 · LLM traces"], size=50, label_size=14)
 icon("springsecurity", 1440, 815, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
 

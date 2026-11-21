@@ -1,10 +1,10 @@
-# Local infrastructure for later phases. Phase 1 (the scan API) does not need any of it.
-#   docker compose up -d
+# Local infrastructure. The scan API and the triage agent run without it.
+#   docker compose up -d postgres     # phase 3: the RAG knowledge base (then: scripts/ingest.sh local)
 # Langfuse is added in phase 5 (its self-hosted stack brings its own ClickHouse, Redis and MinIO).
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17   # Postgres with the pgvector extension: phase 3 hybrid search
+    image: pgvector/pgvector:pg17   # Postgres with the pgvector extension: the hybrid-search knowledge base
     environment:
       POSTGRES_DB: depguard
       POSTGRES_USER: depguard

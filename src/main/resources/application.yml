@@ -1,6 +1,9 @@
 spring:
   application:
     name: depguard
+  config:
+    # Local secrets (POSTGRES_PASSWORD) from the gitignored .env file, if present. Lambda uses env vars.
+    import: optional:file:.env[.properties]
   autoconfigure:
     # The Lambda adapter brings a Spring Cloud Function auto-config that swaps Tomcat for a
     # "serverless" web server, so locally nothing would listen on :8080. The Lambda handler
@@ -18,6 +21,10 @@ spring:
         # Credentials come from the default AWS chain: your local profile/SSO, or the Lambda's IAM role.
         region: ${AWS_REGION:us-east-1}
         timeout: 25s         # per model call; API Gateway gives up after 30 s in total
+      titan:
+        embedding:
+          model: amazon.titan-embed-text-v2:0  # 1024 numbers per text, $0.02 per million tokens
+          input-type: text
       converse:
         chat:
           options:
@@ -26,9 +33,11 @@ spring:
             model: us.anthropic.claude-haiku-4-5-20251001-v1:0
             temperature: 0.2   # low: triage should be consistent, not creative
             max-tokens: 1500   # caps the cost of one answer
+    model:
+      embedding: bedrock-titan # Spring AI's Bedrock starter has two embedding models; use Titan
 
 depguard:
-  # Required as the X-Api-Key header on /api/triage when set. Empty locally; Terraform sets it on Lambda.
+  # Required as the X-Api-Key header on /api/triage and /api/knowledge when set. Empty locally; Terraform sets it on Lambda.
   api-key: ${DEPGUARD_API_KEY:}
   osv:
     base-url: https://api.osv.dev
@@ -40,6 +49,44 @@ depguard:
     connect-timeout: 3s
     read-timeout: 15s
     kev-cache-ttl: 6h        # the catalog changes a few times a week
+
+  rag:
+    # "jdbc" = local docker-compose Postgres; "data-api" = Aurora on AWS (Terraform sets this on Lambda)
+    store: ${DEPGUARD_RAG_STORE:jdbc}
+    top-k: 5
+    jdbc:
+      url: jdbc:postgresql://localhost:5432/depguard
+      username: depguard
+      password: ${POSTGRES_PASSWORD:}
+    data-api:
+      cluster-arn: ${DEPGUARD_RAG_CLUSTER_ARN:}
+      secret-arn: ${DEPGUARD_RAG_SECRET_ARN:}
+      database: depguard
+    ingest:
+      osv-dump-url: https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip
+      max-advisories: 0      # 0 = all (~7,300); e.g. 300 for a quick, nearly free local trial
+      concurrency: 4         # parallel embedding calls; Bedrock throttles above its per-minute quota
+      guides:                # fetched at ingest time; not stored in this repo
+        - id: spring-boot-3.0-migration
+          title: Spring Boot 3.0 Migration Guide
+          raw-url: https://raw.githubusercontent.com/wiki/spring-projects/spring-boot/releasenotes/Spring-Boot-3.0-Migration-Guide.asciidoc
+          page-url: https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-3.0-Migration-Guide
+        - id: spring-boot-4.0-migration
+          title: Spring Boot 4.0 Migration Guide
+          raw-url: https://raw.githubusercontent.com/wiki/spring-projects/spring-boot/releasenotes/Spring-Boot-4.0-Migration-Guide.asciidoc
+          page-url: https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide
+        - id: spring-framework-6.0
+          title: Spring Framework 6.0 Release Notes
+          raw-url: https://raw.githubusercontent.com/wiki/spring-projects/spring-framework/Spring-Framework-6.0-Release-Notes.md
+          page-url: https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-6.0-Release-Notes
+        - id: spring-framework-7.0
+          title: Spring Framework 7.0 Release Notes
+          raw-url: https://raw.githubusercontent.com/wiki/spring-projects/spring-framework/Spring-Framework-7.0-Release-Notes.md
+          page-url: https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-7.0-Release-Notes
+        - id: jackson-3-migration
+          title: Migrating to Jackson 3
+          raw-url: https://raw.githubusercontent.com/FasterXML/jackson/main/jackson3/MIGRATING_TO_JACKSON_3.md
+          page-url: https://github.com/FasterXML/jackson/blob/main/jackson3/MIGRATING_TO_JACKSON_3.md
 
 management:
   endpoints:

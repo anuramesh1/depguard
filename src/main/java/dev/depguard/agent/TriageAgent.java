@@ -1,6 +1,7 @@
 package dev.depguard.agent;
 
 import dev.depguard.agent.tools.ExploitTools;
+import dev.depguard.agent.tools.KnowledgeTools;
 import dev.depguard.agent.tools.VulnerabilityTools;
 import dev.depguard.dependency.Dependency;
 import dev.depguard.dependency.ParsedPom;
@@ -21,10 +22,11 @@ import org.springframework.stereotype.Service;
  * <p>How one request runs:
  * <ol>
  *   <li>Parse the pom in plain Java (no LLM needed to read XML).</li>
- *   <li>Send the dependency list and question to the model, with three tools available. Spring AI runs
+ *   <li>Send the dependency list and question to the model, with four tools available. Spring AI runs
  *       the tool-calling loop: the model asks for a tool, Spring AI calls our Java method and sends the
  *       result back, until the model writes its answer. Typically: findVulnerabilities, then
- *       getExploitProbability + checkKnownExploited together, then the answer.</li>
+ *       getExploitProbability + checkKnownExploited together, searchAdvisories for major upgrades (RAG),
+ *       then the answer.</li>
  *   <li>Check the answer's CVE IDs against what the tools returned (guardrail).</li>
  * </ol>
  */
@@ -37,6 +39,7 @@ public class TriageAgent {
     private final PomParser pomParser;
     private final VulnerabilityTools vulnerabilityTools;
     private final ExploitTools exploitTools;
+    private final KnowledgeTools knowledgeTools;
     private final Resource systemPrompt;
     private final Resource userPrompt;
     private final String model;
@@ -46,6 +49,7 @@ public class TriageAgent {
             PomParser pomParser,
             VulnerabilityTools vulnerabilityTools,
             ExploitTools exploitTools,
+            KnowledgeTools knowledgeTools,
             @Value("classpath:prompts/triage-system.st") Resource systemPrompt,
             @Value("classpath:prompts/triage-user.st") Resource userPrompt,
             @Value("${spring.ai.bedrock.converse.chat.options.model:unknown}") String model) {
@@ -53,6 +57,7 @@ public class TriageAgent {
         this.pomParser = pomParser;
         this.vulnerabilityTools = vulnerabilityTools;
         this.exploitTools = exploitTools;
+        this.knowledgeTools = knowledgeTools;
         this.systemPrompt = systemPrompt;
         this.userPrompt = userPrompt;
         this.model = model;
@@ -64,7 +69,7 @@ public class TriageAgent {
         if (pom.dependencies().isEmpty()) {
             // Nothing to check: answer without spending tokens.
             return new TriageResult("No dependencies with a known version were found in this pom.xml.",
-                    List.of(), List.of(), List.of(), pom.skipped(), model, 0, 0, elapsedMs(start));
+                    List.of(), List.of(), List.of(), List.of(), pom.skipped(), model, 0, 0, elapsedMs(start));
         }
 
         TriageSession session = new TriageSession();
@@ -74,7 +79,7 @@ public class TriageAgent {
                         .param("dependencies", formatDependencies(pom.dependencies()))
                         .param("skipped", pom.skipped().isEmpty() ? "none" : String.join("\n", pom.skipped()))
                         .param("question", question == null || question.isBlank() ? DEFAULT_QUESTION : question.trim()))
-                .tools(vulnerabilityTools, exploitTools)
+                .tools(vulnerabilityTools, exploitTools, knowledgeTools)
                 .toolContext(Map.of(TriageSession.KEY, session))
                 .call()
                 .chatResponse();
@@ -90,6 +95,7 @@ public class TriageAgent {
                 citations.cited(),
                 citations.unverified(),
                 session.toolCalls(),
+                session.sources(),
                 pom.skipped(),
                 model,
                 usage == null ? null : usage.getPromptTokens(),

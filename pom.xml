@@ -22,6 +22,8 @@
         <aws-serverless-java-container.version>3.0.5</aws-serverless-java-container.version>
         <!-- Spring AI 2.x is the line built for Spring Boot 4 -->
         <spring-ai.version>2.1.0</spring-ai.version>
+        <!-- Same AWS SDK version Spring AI's Bedrock modules use, so every SDK module matches -->
+        <aws-sdk.version>2.55.14</aws-sdk.version>
     </properties>
 
     <dependencyManagement>
@@ -30,6 +32,13 @@
                 <groupId>org.springframework.ai</groupId>
                 <artifactId>spring-ai-bom</artifactId>
                 <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${aws-sdk.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -57,6 +66,33 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-bedrock-converse</artifactId>
         </dependency>
+        <!-- Embeddings for RAG: Amazon Titan Text Embeddings v2 on Bedrock, via Spring AI's EmbeddingModel -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-bedrock</artifactId>
+            <exclusions>
+                <!-- Not needed for embeddings. If WebFlux is on the classpath, the Lambda adapter starts a
+                     reactive app instead of our Spring MVC one. -->
+                <exclusion>
+                    <groupId>org.springframework</groupId>
+                    <artifactId>spring-webflux</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- RAG store, local: plain JDBC to the docker-compose Postgres (pgvector) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <!-- RAG store, AWS: Aurora through the RDS Data API (HTTPS + IAM, so Lambda stays out of the VPC) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>rdsdata</artifactId>
+        </dependency>
         <!-- Maven's own version comparison ("2.9.10.8" vs "2.10.0", "1.0-RC1" vs "1.0") -->
         <dependency>
             <groupId>org.apache.maven</groupId>
@@ -79,6 +115,22 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Runs the real hybrid-search SQL against a throwaway pgvector container (skipped without Docker) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- Boot 4 split the test slices into modules: this one provides @WebMvcTest -->

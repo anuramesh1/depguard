@@ -4,11 +4,13 @@ import dev.depguard.dependency.PomParseException;
 import dev.depguard.osv.OsvUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import software.amazon.awssdk.core.exception.SdkException;
+import software.amazon.awssdk.services.rdsdata.model.RdsDataException;
 
 /**
  * Turns our exceptions into RFC 9457 "problem detail" JSON responses.
@@ -32,6 +34,19 @@ public class ApiExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.SERVICE_UNAVAILABLE, "The vulnerability database is unavailable. Try again shortly.");
         problem.setTitle("Upstream unavailable");
+        return problem;
+    }
+
+    /**
+     * Knowledge-base errors: local Postgres not running, or Aurora unreachable or resuming. More specific than
+     * SdkException below, so Spring picks this handler for Data API errors.
+     */
+    @ExceptionHandler({DataAccessException.class, RdsDataException.class})
+    ProblemDetail knowledgeBaseUnavailable(RuntimeException e) {
+        log.warn("Knowledge base call failed", e);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE, "The knowledge base is unavailable right now. Try again shortly.");
+        problem.setTitle("Knowledge base unavailable");
         return problem;
     }
 

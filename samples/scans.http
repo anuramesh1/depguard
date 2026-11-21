@@ -16,6 +16,13 @@ Content-Type: application/xml
 
 < ./vulnerable-pom.xml
 
+### Knowledge base search (phase 3): shows each hit's semantic rank, keyword rank and fused RRF score
+# Needs: docker compose up -d postgres, scripts/ingest.sh local, and AWS credentials (the query is embedded by Titan)
+GET http://localhost:8080/api/knowledge/search?q=Text4Shell StringSubstitutor
+
+### A paraphrase with no shared keywords: the semantic half finds it
+GET http://localhost:8080/api/knowledge/search?q=moving from javax servlet imports to the new namespace
+
 ### Invalid input returns a 400 problem detail
 POST http://localhost:8080/api/scans
 Content-Type: application/xml

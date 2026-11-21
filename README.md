@@ -5,32 +5,39 @@ Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and wha
 
 Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
-> **Status: phases 1–2 of 8.** A scan API (no LLM) and an AI triage agent with tool calling. 37 tests pass.
-> Both verified end to end against live data and Bedrock. Deploys to AWS serverless (Lambda + SnapStart, about $0 while idle) with `scripts/deploy.sh`;
+> **Status: phases 1–3 of 8.** A scan API (no LLM), an AI triage agent with tool calling, and a hybrid-search (RAG)
+> knowledge base of every OSV Maven advisory plus official migration guides. 55 tests (3 of them need Docker).
+> All three verified end to end against live data and Bedrock.
+> Deploys to AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle) with `scripts/deploy.sh`;
 > removed with `scripts/teardown.sh`.
 
 ---
 
 ## Architecture
 
-![DepGuard architecture on AWS, drawn with service icons: a developer sends a pom.xml to Amazon API Gateway, which invokes a Java 21 Lambda with SnapStart running Spring Boot. Inside it, StreamLambdaHandler passes the request to the controllers. /api/scans goes to ScanService and OsvClient, which calls OSV.dev. /api/triage goes to TriageAgent, which calls Claude on Amazon Bedrock and uses three tools: the scan, and EpssClient and KevClient, which call FIRST EPSS and CISA KEV. Logs go to CloudWatch. Deploying: Maven builds the zip, Terraform uploads it through S3 to a new SnapStart version, then a health check. Later phases add Aurora Serverless v2, Langfuse and Spring Security.](docs/architecture/depguard-architecture-aws.png)
+![DepGuard architecture on AWS, drawn with service icons: a developer sends a pom.xml to Amazon API Gateway, which invokes a Java 21 Lambda with SnapStart running Spring Boot. Inside it, StreamLambdaHandler passes the request to the controllers. /api/scans goes to ScanService and OsvClient, which calls OSV.dev. /api/triage goes to TriageAgent, which calls Claude on Amazon Bedrock and uses four tools: the scan, EpssClient and KevClient (FIRST EPSS and CISA KEV), and HybridRetriever, which embeds the question with Titan and searches Aurora Serverless v2 (pgvector + full-text) through the RDS Data API. Logs go to CloudWatch. Deploying: Maven builds the zip, Terraform uploads it through S3 to a new SnapStart version, then a health check. An ingest run fills the knowledge base from the OSV export and migration guides. Later phases add evals, Langfuse and Spring Security.](docs/architecture/depguard-architecture-aws.png)
 
 1. **Request:** a client posts a `pom.xml` over HTTPS to **API Gateway**, which throttles it to 5 requests/s and invokes the Lambda's `live` alias.
 2. **Inside Lambda:** `StreamLambdaHandler` turns the API Gateway event into a normal servlet request, so the same Spring controller runs
    on Lambda and locally. `ScanService` parses the pom with `PomParser`, asks **OSV.dev** about every dependency through `OsvClient`
    (one batched call, then parallel fetches on virtual threads), and returns the report ranked by severity.
-   For `/api/triage`, `TriageAgent` instead hands the dependency list to **Claude on Amazon Bedrock** with three tools:
-   OSV (the same scan), **FIRST EPSS** (exploit probability) and the **CISA KEV** catalog (known exploited).
-3. **Deploy:** `scripts/deploy.sh` runs the tests, builds `target/depguard-lambda.zip` and applies the Terraform in `infra/serverless/`.
+   For `/api/triage`, `TriageAgent` instead hands the dependency list to **Claude on Amazon Bedrock** with four tools:
+   OSV (the same scan), **FIRST EPSS** (exploit probability), the **CISA KEV** catalog (known exploited), and a
+   **hybrid search** over the knowledge base in **Aurora Serverless v2** (reached through the RDS Data API, so the
+   Lambda needs no VPC).
+3. **Knowledge base:** `scripts/ingest.sh` downloads every OSV Maven advisory and the migration guides, embeds them
+   with **Titan Text Embeddings v2** and stores them in Postgres with pgvector. Re-runs embed only what changed.
+4. **Deploy:** `scripts/deploy.sh` runs the tests, builds `target/depguard-lambda.zip` and applies the Terraform in `infra/serverless/`.
    SnapStart snapshots the started app, so cold starts don't pay the Spring Boot startup cost.
-4. **Locally:** `./mvnw spring-boot:run` serves the same controller on Tomcat at port 8080. There is no API Gateway or Lambda handler locally.
+5. **Locally:** `./mvnw spring-boot:run` serves the same controller on Tomcat at port 8080, and the knowledge base is
+   the docker-compose Postgres. There is no API Gateway or Lambda handler locally.
 
 The dashed panel shows later phases.
 
 <details>
 <summary>Simple box version of the same diagram</summary>
 
-![DepGuard architecture as plain boxes: client, API Gateway, Lambda with StreamLambdaHandler, Controllers, TriageAgent, ScanService, EpssClient/KevClient and OsvClient; externals Amazon Bedrock, EPSS/CISA KEV, OSV.dev and CloudWatch; below, the deploy steps and later phases.](docs/architecture/depguard-architecture.svg)
+![DepGuard architecture as plain boxes: client, API Gateway, Lambda with StreamLambdaHandler, Controllers, TriageAgent, ScanService, HybridRetriever, EpssClient/KevClient and OsvClient; externals Amazon Bedrock, Aurora Serverless v2, EPSS/CISA KEV, OSV.dev and CloudWatch; below, the deploy and ingest steps and later phases.](docs/architecture/depguard-architecture.svg)
 
 </details>
 
@@ -67,10 +74,11 @@ A Spring AI agent decides **what to upgrade first and why**, using live data thr
 ```
 pom.xml ─► PomParser ─► Claude on Bedrock ─┬─► findVulnerabilities   (OSV, the phase 1 scan, compact results)
            (plain Java)   (Spring AI        ├─► getExploitProbability (FIRST EPSS)    ┐ called together
-                          ChatClient)       └─► checkKnownExploited   (CISA KEV)      ┘
+                          ChatClient)       ├─► checkKnownExploited   (CISA KEV)      ┘
+                                            └─► searchAdvisories      (hybrid RAG, phase 3: migration guides + advisory text)
                                │
                                ▼
-                         Markdown answer ─► CveCitationGuard ─► TriageResult (answer, unverified CVEs, tool trace, tokens)
+                         Markdown answer ─► CveCitationGuard ─► TriageResult (answer, unverified CVEs, tool trace, sources, tokens)
 ```
 
 | Concept | Where |
@@ -105,12 +113,72 @@ Sample answer for `samples/vulnerable-pom.xml` (live run: 3 tool calls, ~12 s, ~
 The response also lists `citedCves` and `unverifiedCves` (empty here: all 11 CVEs came from tools), the tool trace and token counts.
 Known weakness, for phase 4's evals: here the model ranked commons-text (EPSS 99.9%) below jackson-databind (26.6%), against its own rules.
 
+### Knowledge base with hybrid search (phase 3): `GET /api/knowledge/search`
+
+The agent's `searchAdvisories` tool grounds its "Upgrade notes" in the official migration guides instead of the
+model's memory. The same search is exposed as an endpoint, so you can see what retrieval finds and why.
+
+```
+ingest (once, then incremental)                         query time (one SQL statement)
+OSV Maven export (~7,300 advisories) ─┐                 question ─► Titan embedding ─┐
+migration guides (Spring Boot 3/4,    ├─► chunk ─► Titan ─► Postgres                 ├─► semantic: pgvector cosine, top 40 ─┐
+Spring Framework 6/7, Jackson 3) ─────┘    embeddings     pgvector + full-text       └─► keyword: full-text, top 40 ────────┴─► RRF fusion ─► top 5
+```
+
+| Concept | Where |
+|---|---|
+| Hybrid search in one SQL query: pgvector + Postgres full-text, fused with Reciprocal Rank Fusion | [rag/HybridSearchSql.java](src/main/java/dev/depguard/rag/HybridSearchSql.java) |
+| One store interface, two connections: JDBC locally, **RDS Data API** on AWS (Lambda stays out of the VPC) | [rag/AdvisoryStore.java](src/main/java/dev/depguard/rag/AdvisoryStore.java), [JdbcAdvisoryStore](src/main/java/dev/depguard/rag/JdbcAdvisoryStore.java), [DataApiAdvisoryStore](src/main/java/dev/depguard/rag/DataApiAdvisoryStore.java) |
+| Embeddings through Spring AI's `EmbeddingModel` (Titan Text v2, 1024 dimensions) | [rag/HybridRetriever.java](src/main/java/dev/depguard/rag/HybridRetriever.java), `application.yml` |
+| Chunking by document structure (headings), not fixed sizes | [rag/ingest/DocumentChunker.java](src/main/java/dev/depguard/rag/ingest/DocumentChunker.java) |
+| Exact identifiers (package names, fixed versions, CVE IDs) written into each advisory chunk, so keyword search can find them | [rag/ingest/OsvAdvisoryFeed.java](src/main/java/dev/depguard/rag/ingest/OsvAdvisoryFeed.java) |
+| Incremental ingest: content hashes skip unchanged chunks; bounded parallel embedding on virtual threads | [rag/ingest/IngestService.java](src/main/java/dev/depguard/rag/ingest/IngestService.java) |
+| Retrieved CVEs count as "known" for the citation guardrail; sources are listed in the triage response | [agent/tools/KnowledgeTools.java](src/main/java/dev/depguard/agent/tools/KnowledgeTools.java) |
+| The real SQL tested against pgvector in a throwaway container | [JdbcAdvisoryStoreTest](src/test/java/dev/depguard/rag/JdbcAdvisoryStoreTest.java) (Testcontainers; skipped without Docker) |
+
+**Why hybrid:** embeddings find meaning ("deserialization attack" ≈ "gadget chain RCE") but blur exact tokens such as
+`CVE-2022-42889`, `jackson-databind` or `@ConstructorBinding`; full-text search is the reverse. RRF combines the two
+by rank only (each list adds `1 / (60 + rank)`), so their very different score scales never need comparing.
+Each search result shows `vectorRank`, `keywordRank` and `score`, so you can see which half found it.
+
+**Live results** (full local index: 7,352 chunks; first full ingest took ~4 minutes with 0 failures):
+
+```
+GET /api/knowledge/search?q=log4j-core JNDI lookup remote code execution
+  vectorRank 1   keywordRank 1   score 0.0328   GHSA-jfh8-c2jp-5v3q: Remote code injection in Log4j
+  vectorRank 2   keywordRank 3   score 0.0320   GHSA-7rjr-3q55-vv33: Incomplete fix for Apache Log4j vulnerability
+  vectorRank 10  keywordRank 2   score 0.0304   GHSA-v57x-gxfj-484q: Security Advisory for "Log4Shell"
+
+GET /api/knowledge/search?q=CVE-2021-44228
+  vectorRank —   keywordRank 1   score 0.0164   GHSA-v57x-gxfj-484q: Security Advisory for "Log4Shell"
+  vectorRank 1   keywordRank —   score 0.0164   GHSA-x2p8-rgfm-qw3v: Access Control vulnerability within CoreNLP   ← embeddings blur exact IDs
+```
+
+The second query shows why both halves are needed: only the keyword half understands a bare CVE ID.
+With the knowledge base, the triage's "Upgrade notes" become specific and sourced (live run: 5 tool calls including
+2 searches, 7 guide sections read, ~11.6 s, ~18.5k input + 1.4k output tokens ≈ $0.025):
+
+```markdown
+## Upgrade notes
+**Spring Framework 6 migration** (from Spring Framework 6.0 Release Notes):
+Jakarta EE migration required: switch `javax.servlet` imports to `jakarta.servlet`, upgrade Tomcat to 10+, Jetty to 11+ …
+**Jackson 3 migration** (from Jackson 3 Migration Guide):
+Java 17+ required. Maven group ID changes from `com.fasterxml.jackson` to `tools.jackson` (except `jackson-annotations`) …
+```
+
+A new weakness for phase 4's evals: having read the Jackson 3 guide, the model claimed jackson-databind "requires" Jackson 3
+for full security, although 2.18.11 already fixes the listed CVEs. Retrieval can pull an answer off course, which is why
+RAG needs evals, not just a guardrail.
+
+**Why not Spring AI's `PgVectorStore`:** it needs JDBC, and on AWS the app reaches Aurora through the Data API (HTTPS + IAM)
+to avoid putting the Lambda in a VPC with a NAT gateway (~$32/month). Hand-written SQL also keeps the RRF query visible.
+
 ## Local demo (free)
 
 Prerequisite: **JDK 21+** (`brew install --cask temurin@21`). Maven comes with the project (`./mvnw`).
 
 ```bash
-./mvnw test                     # 37 tests, no network or AWS needed
+./mvnw test                     # 55 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
 ./mvnw spring-boot:run          # starts on http://localhost:8080
 
 curl -s -X POST localhost:8080/api/scans \
@@ -125,6 +193,18 @@ curl -s -X POST 'localhost:8080/api/triage?question=What+should+I+fix+this+week'
 
 The model is `us.anthropic.claude-haiku-4-5-20251001-v1:0` by default. To use another Bedrock model enabled for your account,
 set `SPRING_AI_BEDROCK_CONVERSE_CHAT_OPTIONS_MODEL` (locally) or the Terraform variable `model_id` (on AWS).
+
+**Knowledge base (phase 3), locally:** Postgres + pgvector in Docker, embeddings from Bedrock (AWS credentials needed).
+
+```bash
+cp .env.example .env                 # then set POSTGRES_PASSWORD to any local password
+docker compose up -d postgres
+scripts/ingest.sh local 300          # quick trial: 300 advisories + the guides, < 1 min, about $0.003
+scripts/ingest.sh local              # everything: ~7,350 chunks, ~4 min, about $0.05; re-runs embed only changes
+curl -s 'localhost:8080/api/knowledge/search?q=Text4Shell+StringSubstitutor' | jq
+```
+
+Without the database the app still runs: knowledge search returns 503, and triage answers without the guides (it says so).
 
 In IntelliJ: run `DepGuardApplication`, then open [samples/scans.http](samples/scans.http) and click the green arrows.
 
@@ -144,16 +224,16 @@ skipped:  org.slf4j:slf4j-api (version managed by a parent pom or BOM)
 Note `spring-web 5 → 6`: a major upgrade that needs Java 17+ and the `javax` → `jakarta` change.
 A plain scanner can't explain that; the triage agent does (see its sample answer above).
 
-`docker compose up -d` starts Postgres+pgvector and Redis for later phases (copy `.env.example`
-to `.env` first). Phase 1 does not need them.
+`docker compose up -d` also starts Redis, which phase 6 will use.
 
-## Cloud demo on AWS (serverless, about $0 while idle)
+## Cloud demo on AWS (serverless, about $0.50/month while idle)
 
 DepGuard deploys as a **Lambda function (Java 21, SnapStart) behind an API Gateway HTTP API**.
-Nothing runs between requests, so it can stay deployed for weeks at almost no cost.
+Nothing runs between requests, and the Aurora database pauses after 10 idle minutes, so it can stay deployed for weeks at almost no cost.
 
 ```bash
-scripts/deploy.sh      # run tests, build the Lambda zip, create/update everything, check health (~3-5 min)
+scripts/deploy.sh      # run tests, build the Lambda zip, create/update everything, check health (~3-5 min; first run ~10 min for Aurora)
+scripts/ingest.sh aws  # fill the knowledge base in Aurora from your laptop, through the Data API (first time, or to refresh)
 scripts/status.sh      # is it deployed? prints the URL and health
 scripts/teardown.sh    # delete everything; asks you to type 'destroy' (or pass --yes)
 ```
@@ -163,17 +243,19 @@ Re-running `scripts/deploy.sh` ships a new version: a new Lambda version is publ
 **Prerequisites:** JDK 21, AWS CLI v2 with credentials (`aws sso login` or `AWS_PROFILE`), Terraform ≥ 1.6.
 Docker isn't needed. Optional: `AWS_REGION` (default `us-east-1`).
 
-**What gets created** ([infra/serverless/](infra/serverless/), 15 resources):
+**What gets created** ([infra/serverless/](infra/serverless/), 23 resources):
 
 ```
 anyone ──HTTPS──► API Gateway HTTP API ──► Lambda alias "live" ──► Lambda (Java 21, ARM64, 1 GB, SnapStart) ──HTTPS──► api.osv.dev
                   (throttled: 5 req/s,      (newest published         Spring Boot runs inside it unchanged,
                    burst 10)                  version)                  via StreamLambdaHandler
                                                                         logs → CloudWatch (7-day retention)
-                                                                        ──► Amazon Bedrock (Claude), EPSS, CISA KEV
+                                                                        ──► Amazon Bedrock (Claude, Titan), EPSS, CISA KEV
+                                                                        ──► RDS Data API ──► Aurora Serverless v2 (pgvector)
 ```
 Also: a private S3 bucket that holds the Lambda zip (direct uploads are capped at 50 MB; ours is ~45 MB),
-an IAM policy for one Bedrock model, and a generated API key for `/api/triage`.
+IAM policies for two Bedrock models and the Data API, a generated API key, and Aurora's own private VPC
+(two subnets, no internet gateway, no NAT, no inbound rules: the Data API is the only way in).
 
 **How Spring Boot runs on Lambda:**
 - [StreamLambdaHandler](src/main/java/dev/depguard/lambda/StreamLambdaHandler.java) uses AWS's
@@ -189,19 +271,21 @@ an IAM policy for one Bedrock model, and a generated API key for `/api/triage`.
 
 | Situation | ≈ cost |
 |---|---|
-| Idle | ~$0 (a few cents of log storage at most) |
+| Idle | ~$0.50/month: Aurora's password secret ($0.40) and storage (cents); its compute pauses at 0 ACU |
+| Aurora while awake | ~$0.06/hour at 0.5 ACU; it pauses again after 10 idle minutes. The first query after a pause waits ~15 s |
+| First full ingest | ~$0.05 of Titan embeddings (~7,350 chunks), plus a few minutes of Aurora time |
 | One scan (about 2.5 s at 1 GB on ARM64, plus one API request) | ~$0.00003 |
 | 1,000 demo scans | ~$0.03, and usually inside Lambda's monthly free allowance |
-| One AI triage (3 model calls, ~10k input + ~1.2k output tokens on Haiku 4.5) | ~$0.015 |
+| One AI triage (4–5 model calls, ~18k input + ~1.4k output tokens on Haiku 4.5, plus 1–2 query embeddings) | ~$0.025 |
 | Worst case: someone hammers `/api/scans` at the 5 req/s throttle all day | ~$15/day. This is why the throttle exists; tear down if you see unexpected traffic. |
 | Someone hammering `/api/triage` | Blocked: it needs the API key, because unthrottled LLM calls could cost far more |
 
 **Demo security choices** (fine for a demo; see the next section for production):
 - The URL is **public** (HTTPS on the default `execute-api` domain), **throttled** to 5 requests/s with a burst of 10.
   HTTP APIs can't restrict callers by IP; see the production checklist.
-- `/api/triage` needs an `X-Api-Key` header. Terraform generates the key; read it with
+- `/api/triage` and `/api/knowledge` need an `X-Api-Key` header. Terraform generates the key; read it with
   `terraform -chdir=infra/serverless output -raw api_key`. `/api/scans` stays open because it costs almost nothing.
-- The Lambda role can write its own logs and invoke one Bedrock model, nothing else.
+- The Lambda role can write its own logs, invoke two Bedrock models, and run SQL on one Aurora cluster with its one secret; nothing else.
 - Terraform state is local (`infra/serverless/terraform.tfstate`, gitignored). **Don't delete it while deployed**;
   teardown needs it to find the resources.
 
@@ -214,7 +298,7 @@ Prices are approximate us-east-1 list prices; the UAE (me-central-1) and some ot
 
 | Option | ≈ cost | Good for | Trade-offs |
 |---|---|---|---|
-| **Serverless (this repo's deploy)**: API Gateway + Lambda SnapStart (+ Aurora Serverless v2 in phase 3) | ~$0 idle (~$1–3/month with Aurora storage) + per request | Demos, spiky or low traffic | Public URL (throttled); first request after Aurora pauses waits ~15 s; Lambda limits |
+| **Serverless (this repo's deploy)**: API Gateway + Lambda SnapStart + Aurora Serverless v2 (Data API) | ~$0.50/month idle + per request | Demos, spiky or low traffic | Public URL (throttled); first request after Aurora pauses waits ~15 s; Lambda limits |
 | **Fargate demo stack** ([infra/fargate/](infra/fargate/), not wired to the scripts) | ~$1.40/day while up | Learning ECS; always-warm demo | Fixed cost while up; HTTP only; public subnets |
 | **Lean always-on Fargate** + RDS | ~$60/month (~$2/day) | Small internal tool | Single task: brief downtime when it restarts |
 | **Production-grade Fargate** (below) | ~$115+/month (~$3.80/day) before scale | Steady traffic, long requests, streaming | Higher fixed cost, more to operate |
@@ -224,15 +308,17 @@ Prices are approximate us-east-1 list prices; the UAE (me-central-1) and some ot
 - **Fargate** when traffic is steady (it gets cheaper than Lambda at sustained load), when requests run longer than
   30 s (API Gateway's limit; relevant for long agent runs), or when you need long-lived connections such as streaming chat.
 
-LLM usage is extra and usage-based on either option: about $0.015 per triage on Claude Haiku 4.5
-(measured: ~10k tokens in and ~1.2k out across 3 model calls), so 1,000 triages cost roughly $15. Check current Bedrock prices.
+LLM usage is extra and usage-based on either option: about $0.025 per triage on Claude Haiku 4.5
+(measured: ~18.5k tokens in and ~1.4k out across 5 model calls), so 1,000 triages cost roughly $25. Check current Bedrock prices.
 
-### Phase 3 note: the database on serverless
+### The database on serverless (how phase 3 does it)
 
 A Lambda that joins a VPC to reach a database loses internet access unless you add a NAT Gateway (~$33/month),
 and DepGuard needs the internet to call OSV. Two ways to avoid that:
-- **Aurora Serverless v2 with the RDS Data API** (recommended): the Lambda stays outside the VPC and runs SQL
-  (including pgvector queries) over HTTPS with IAM auth. Aurora can pause at 0 capacity when idle.
+- **Aurora Serverless v2 with the RDS Data API** (what this repo does): the Lambda stays outside the VPC and runs SQL
+  (including pgvector queries) over HTTPS with IAM auth. Aurora pauses at 0 capacity when idle.
+  The trade-offs: no JDBC (so no connection pool and no Spring AI `PgVectorStore`), 1 MB per response, and a ~15 s
+  wake-up after a pause.
 - **VPC endpoints** for the AWS services you need, if you need a normal JDBC connection. These cost about $7/month each per AZ.
 
 ### Production-grade Fargate stack, always on
@@ -267,7 +353,7 @@ and DepGuard needs the internet to call OSV. Two ways to avoid that:
 The phase 6 semantic cache answers "have we answered a question like this before?", which is a vector-similarity lookup.
 - **pgvector in the existing Postgres:** no extra service or cost, one less thing to operate. Recommended, especially on serverless.
 - **ElastiCache (Redis/Valkey):** lower latency at high request rates, and also useful for rate limiting and sessions.
-  Adds about $12/month, and a Lambda must join the VPC to reach it (see the phase 3 note).
+  Adds about $12/month, and a Lambda must join the VPC to reach it (see "The database on serverless" above).
 
 ## Roadmap
 
@@ -275,7 +361,7 @@ The phase 6 semantic cache answers "have we answered a question like this before
 |---|---|---|
 | **1** ✅ | Scan API over OSV | Spring Boot Web, Java 21, API design |
 | **2** ✅ | Spring AI agent on Bedrock with tools (OSV, EPSS, CISA KEV), prompt templates, citation guardrail | Agent tool calling, prompt design |
-| 3 | Hybrid RAG over advisories and migration guides (pgvector + full-text + RRF) | RAG, Spring Data |
+| **3** ✅ | Hybrid RAG over advisories and migration guides (pgvector + full-text + RRF), Aurora via the Data API | RAG, data |
 | 4 | Golden-set evals from OSV ground truth + LLM-as-judge, in CI | Evals design |
 | 5 | Langfuse traces: tokens, cost, latency, failures | LLM observability |
 | 6 | Semantic cache, prompt caching, model routing | Cost and performance optimization |
@@ -288,4 +374,7 @@ All public and free:
 - [OSV.dev](https://osv.dev): advisories, including the GitHub Advisory Database (CC-BY 4.0). No key.
 - [FIRST EPSS](https://www.first.org/epss/): probability that a CVE is exploited in the next 30 days. No key.
 - [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog): CVEs confirmed exploited in the wild. No key.
+- [OSV's Maven export](https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip): the same advisories in bulk, for the knowledge base.
+- Migration guides, fetched at ingest time (not stored in this repo): the Spring Boot 3.0 and 4.0 migration guides and
+  Spring Framework 6.0 and 7.0 release notes (project wikis), and [Migrating to Jackson 3](https://github.com/FasterXML/jackson/blob/main/jackson3/MIGRATING_TO_JACKSON_3.md).
 - Later: the [NVD API](https://nvd.nist.gov/developers) for CVSS details (free key; deferred because OSV already covers severity).

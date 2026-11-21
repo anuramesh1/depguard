@@ -1,0 +1,4 @@
+# Profile "ingest": fill or refresh the knowledge base, then exit (see scripts/ingest.sh).
+spring:
+  main:
+    web-application-type: none   # no web server: this run only ingests

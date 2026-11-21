@@ -40,7 +40,7 @@ class TriageControllerTest {
     void returnsTheAgentsAnswerWithTheRightKey() throws Exception {
         when(triageAgent.triage(anyString(), any())).thenReturn(new TriageResult(
                 "## Upgrade first", List.of(), List.of(), List.of("findVulnerabilities(1 dependencies)"),
-                List.of(), "fake-model", 100, 20, 5));
+                List.of(), List.of(), "fake-model", 100, 20, 5));
 
         mvc.perform(post("/api/triage").header("X-Api-Key", "test-key")
                         .contentType(MediaType.APPLICATION_XML).content("<project/>"))

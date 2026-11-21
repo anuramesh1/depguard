@@ -1,4 +1,5 @@
-# Lets the Lambda call exactly one Bedrock model, through a cross-region inference profile.
+# Lets the Lambda call exactly two Bedrock models: the chat model (through a cross-region inference
+# profile) and the embedding model that turns search questions into vectors.
 #
 # An inference profile (e.g. "us.anthropic.claude-haiku-4-5-...") routes each request to the model in one of
 # several US regions, so the policy must allow the profile itself AND the underlying foundation model in
@@ -20,6 +21,11 @@ data "aws_iam_policy_document" "bedrock" {
       "arn:aws:bedrock:*::foundation-model/${local.foundation_model_id}",
     ]
   }
+  statement {
+    sid       = "EmbedSearchQueries"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${var.embedding_model_id}"]
+  }
 }
 
 resource "aws_iam_role_policy" "bedrock" {
@@ -28,7 +34,7 @@ resource "aws_iam_role_policy" "bedrock" {
   policy = data.aws_iam_policy_document.bedrock.json
 }
 
-# API key for /api/triage. Generated once and kept in the (local, gitignored) Terraform state.
+# API key for /api/triage and /api/knowledge. Generated once and kept in the (local, gitignored) Terraform state.
 # Read it with: terraform -chdir=infra/serverless output -raw api_key
 resource "random_password" "api_key" {
   length  = 40

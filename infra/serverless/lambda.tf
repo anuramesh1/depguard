@@ -20,7 +20,7 @@ data "aws_iam_policy_document" "lambda_assume" {
   }
 }
 
-# Least privilege: write its own logs, and call one Bedrock model (nothing else).
+# Least privilege: write its own logs, call two Bedrock models, and run SQL on one Aurora cluster.
 resource "aws_iam_role" "lambda" {
   name               = "${var.app_name}-lambda"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -54,12 +54,18 @@ resource "aws_lambda_function" "app" {
       JAVA_TOOL_OPTIONS = "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
       # Which Bedrock model the agent uses (Spring's relaxed binding of spring.ai.bedrock...model).
       SPRING_AI_BEDROCK_CONVERSE_CHAT_OPTIONS_MODEL = var.model_id
-      # Callers of /api/triage must send this as the X-Api-Key header (see ApiKeyFilter).
+      # Callers of /api/triage and /api/knowledge must send this as the X-Api-Key header (see ApiKeyFilter).
       DEPGUARD_API_KEY = random_password.api_key.result
+      # RAG knowledge base: Aurora through the RDS Data API (see aurora.tf)
+      DEPGUARD_RAG_STORE                      = "data-api"
+      DEPGUARD_RAG_CLUSTER_ARN                = aws_rds_cluster.knowledge.arn
+      DEPGUARD_RAG_SECRET_ARN                 = aws_rds_cluster.knowledge.master_user_secret[0].secret_arn
+      SPRING_AI_BEDROCK_TITAN_EMBEDDING_MODEL = var.embedding_model_id
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.app, aws_iam_role_policy_attachment.logs, aws_iam_role_policy.bedrock]
+  depends_on = [aws_cloudwatch_log_group.app, aws_iam_role_policy_attachment.logs, aws_iam_role_policy.bedrock,
+  aws_iam_role_policy.data_api]
 }
 
 resource "aws_lambda_alias" "live" {

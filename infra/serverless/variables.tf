@@ -22,6 +22,18 @@ variable "model_id" {
   default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 
+variable "embedding_model_id" {
+  description = "Bedrock embedding model for the RAG knowledge base (must match what ingestion used)."
+  type        = string
+  default     = "amazon.titan-embed-text-v2:0"
+}
+
+variable "aurora_engine_version" {
+  description = "Aurora PostgreSQL version. 16.3+ supports scaling to 0 ACUs (auto-pause) and pgvector 0.8."
+  type        = string
+  default     = "16.9"
+}
+
 variable "memory_mb" {
   description = "Lambda memory. Lambda gives CPU in proportion to memory; 1024 MB suits Spring Boot."
   type        = number

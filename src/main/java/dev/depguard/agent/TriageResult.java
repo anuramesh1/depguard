@@ -9,6 +9,7 @@ import java.util.List;
  * @param citedCves      CVE IDs the answer mentions
  * @param unverifiedCves CVE IDs in the answer that no tool returned: treat these with suspicion
  * @param toolCalls      which tools the agent called, in order (a simple trace)
+ * @param sources        knowledge-base documents the agent read (RAG), as "title (url)"
  * @param skipped        dependencies that could not be checked (version unknown)
  * @param model          the Bedrock model that answered
  * @param inputTokens    tokens sent to the model, across all tool-calling rounds (drives cost)
@@ -19,6 +20,7 @@ public record TriageResult(
         List<String> citedCves,
         List<String> unverifiedCves,
         List<String> toolCalls,
+        List<String> sources,
         List<String> skipped,
         String model,
         Integer inputTokens,

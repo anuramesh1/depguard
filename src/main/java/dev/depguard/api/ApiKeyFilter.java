@@ -7,22 +7,24 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Requires an X-Api-Key header on /api/triage when depguard.api-key is set.
+ * Requires an X-Api-Key header on the paid endpoints (/api/triage, /api/knowledge) when depguard.api-key is set.
  *
  * <p>Why: the deployed URL is public, and every triage call spends model tokens. Without a key, anyone
- * who finds the URL could run up the Bedrock bill. The free /api/scans endpoint stays open.
+ * who finds the URL could run up the Bedrock bill (triage calls the model; knowledge search embeds the query). The free /api/scans endpoint stays open.
  * Locally the key is empty, so no header is needed. Phase 8 replaces this with proper JWT auth.
  */
 @Component
 public class ApiKeyFilter extends OncePerRequestFilter {
 
     static final String HEADER = "X-Api-Key";
+    static final List<String> PROTECTED_PATHS = List.of("/api/triage", "/api/knowledge");
 
     private final byte[] expectedKey;
 
@@ -32,7 +34,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return expectedKey.length == 0 || !request.getRequestURI().startsWith("/api/triage");
+        return expectedKey.length == 0 || PROTECTED_PATHS.stream().noneMatch(request.getRequestURI()::startsWith);
     }
 
     @Override
