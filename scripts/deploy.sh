@@ -35,7 +35,8 @@ echo "region = \"$REGION\"" > "$TF_DIR/terraform.tfvars"
 
 # ---------------------------------------------------------------------------
 step "2/4 Building the Lambda package (runs the tests first)"
-MVN_ARGS=(-B -q -Plambda package)
+# clean: target/lib would otherwise keep jars from older builds and bloat the zip
+MVN_ARGS=(-B -q -Plambda clean package)
 [[ "${SKIP_TESTS:-}" == "1" ]] && MVN_ARGS+=(-DskipTests)
 (cd "$ROOT" && ./mvnw "${MVN_ARGS[@]}")
 [[ -f "$PACKAGE" ]] || fail "Build did not produce $PACKAGE"

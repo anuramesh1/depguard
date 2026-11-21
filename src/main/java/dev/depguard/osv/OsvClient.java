@@ -82,14 +82,16 @@ public class OsvClient {
     }
 
     // --- OSV request/response shapes (only what we need) ---
+    // The request records are public because the Lambda adapter adds Jackson's Afterburner module,
+    // which generates fast serializers that can only reach public types (it logs a warning otherwise).
 
-    record BatchRequest(List<Query> queries) {
+    public record BatchRequest(List<Query> queries) {
     }
 
-    record Query(@JsonProperty("package") PackageQuery pkg, String version) {
+    public record Query(@JsonProperty("package") PackageQuery pkg, String version) {
     }
 
-    record PackageQuery(String name, String ecosystem) {
+    public record PackageQuery(String name, String ecosystem) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

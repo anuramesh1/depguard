@@ -3,7 +3,7 @@
 An AI agent that triages vulnerable Java dependencies using **live, open-source advisory data**.
 Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and what to upgrade first.
 
-Built with **Java 21, Spring Boot 3.5** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
+Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
 > **Status: phases 1–2 of 8.** A scan API (no LLM) and an AI triage agent with tool calling. 37 tests pass.
 > Both verified end to end against live data and Bedrock. Deploys to AWS serverless (Lambda + SnapStart, about $0 while idle) with `scripts/deploy.sh`;

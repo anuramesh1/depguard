@@ -4,8 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 import com.amazonaws.services.lambda.runtime.Context;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -54,12 +54,13 @@ class StreamLambdaHandlerTest {
         if (contentType != null) {
             headers.put("content-type", contentType);
         }
-        var http = root.putObject("requestContext").putObject("http");
+        var requestContext = root.putObject("requestContext");
+        requestContext.put("stage", "$default");
+        var http = requestContext.putObject("http");
         http.put("method", method);
         http.put("path", path);
         http.put("protocol", "HTTP/1.1");
         http.put("sourceIp", "203.0.113.10");
-        root.with("requestContext").put("stage", "$default");
         if (body != null) {
             root.put("body", body);
         }

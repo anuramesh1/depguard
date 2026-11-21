@@ -81,7 +81,7 @@ Each phase ends with something that can be demoed.
 
 - **Spring AI over LangChain4j.** It is Spring-native, and its built-in Micrometer observability makes the Langfuse phase simpler. LangChain4j is a good alternative.
 - **Amazon Bedrock for models.** On Lambda the function's IAM role calls Bedrock, so there is no API key to store. Claude Haiku handles tool calling; Sonnet is added for routing in phase 6.
-- **Spring Boot 3.5.** It is the most widely deployed Spring Boot line, and Spring AI 1.1 supports it. start.spring.io now offers only 4.x, so the parent version is pinned by hand.
+- **Spring Boot 4.1 with Spring AI 2.1.** The project started on Boot 3.5, which stopped receiving free security patches on 30 June 2026. For a tool that flags outdated dependencies, staying on a supported line matters, so it moved to Boot 4.1 (free support until July 2027).
 - **Serverless on AWS.** Lambda with SnapStart and API Gateway costs about $0 while idle. Fargate is documented as an alternative for steady traffic or long requests.
 - **Alternative domain, not chosen:** the openFDA drug-label and adverse-event APIs are also live and open, but their answers are harder to check objectively.
 

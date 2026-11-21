@@ -12,8 +12,12 @@ This is a public repo: keep personal notes and context out of committed files. T
 `docs/interview/` folder.
 
 ## Decisions already made (don't re-open without asking)
-- **Java 21, Spring Boot 3.5.16** (stay on 3.x). start.spring.io only offers 4.x now, so the parent version is pinned by hand in pom.xml.
-- **Spring AI 1.1.8** (not LangChain4j; 2.x needs Boot 4): Spring-native, and its Micrometer observability makes the Langfuse phase easier.
+- **Java 21, Spring Boot 4.1.3** (upgraded from 3.5.16 on 2026-11-20: 3.5's free support ended 2026-06-30; 4.1's runs to 2027-07-31).
+  Boot 4 notes: Jackson 3 (`tools.jackson.*`; annotations stay `com.fasterxml.jackson.annotation`), `spring-boot-starter-webmvc`,
+  `spring-boot-starter-restclient` for `RestClient.Builder`, and `spring-boot-starter-webmvc-test` for `@WebMvcTest`.
+  The springboot4 Lambda adapter pulls in Spring Cloud Function's `ServerlessAutoConfiguration`, which replaces Tomcat
+  (nothing listens on :8080). It is excluded in `application.yml`; the Lambda handler works without it.
+- **Spring AI 2.1.0** (not LangChain4j): Spring-native, and its Micrometer observability makes the Langfuse phase easier.
 - **Amazon Bedrock** for models (owner's choice): IAM role on Lambda, no API key to store; Converse API via `spring-ai-starter-model-bedrock-converse`.
 - Single Spring Boot app, no microservices. Packages: `dependency`, `osv`, `scan`, `api` (later `agent`, `rag`, `cache`, `security`, `evals`).
 - Plain blocking code on virtual threads (`spring.threads.virtual.enabled=true`), no reactive stack.
@@ -23,7 +27,7 @@ This is a public repo: keep personal notes and context out of committed files. T
 - **Deploy: serverless**, chosen by the owner. API Gateway HTTP API (throttled 5 req/s, burst 10) → Lambda alias
   `live` → Lambda (java21, arm64, 1 GB, SnapStart). Terraform is in `infra/serverless/` with local state; the scripts
   are `scripts/deploy.sh`, `status.sh` and `teardown.sh`. Costs about $0 while idle.
-  - Spring runs on Lambda via `aws-serverless-java-container-springboot3` (`dev.depguard.lambda.StreamLambdaHandler`,
+  - Spring runs on Lambda via `aws-serverless-java-container-springboot4` 3.0.5 (`dev.depguard.lambda.StreamLambdaHandler`,
     HTTP API v2 events). Package: `./mvnw -Plambda package` → `target/depguard-lambda.zip`. SnapStart needs a zip, not an image.
   - Phase 3 database: Aurora Serverless v2 via the **RDS Data API**, so the Lambda stays out of the VPC (no NAT needed to reach OSV).
   - The Fargate version lives on in `infra/fargate/` as a documented alternative, not wired to the scripts.
@@ -31,7 +35,7 @@ This is a public repo: keep personal notes and context out of committed files. T
 
 ## Status (updated 2026-11-20)
 - **Phase 1 done:** `POST /api/scans` parses a pom, batch-queries OSV, fetches advisories in parallel, returns findings ranked by severity with a recommended upgrade version.
-- **Phase 2 done:** `POST /api/triage` runs a Spring AI 1.1.8 agent on Bedrock with tools `findVulnerabilities` (OSV via ScanService),
+- **Phase 2 done:** `POST /api/triage` runs a Spring AI agent on Bedrock with tools `findVulnerabilities` (OSV via ScanService),
   `getExploitProbability` (FIRST EPSS) and `checkKnownExploited` (CISA KEV feed, cached 6 h). Prompts are in `resources/prompts/`.
   Guardrails: `CveCitationGuard` (answer CVEs must come from tools), max 8 tool calls (`TriageSession`), and an API key on `/api/triage` when deployed.
   - Live run: 3 tool calls, ~12 s, ~9.6k input + 1.2k output tokens (~$0.015), all 11 cited CVEs verified.

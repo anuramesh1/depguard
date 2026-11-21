@@ -1,6 +1,11 @@
 spring:
   application:
     name: depguard
+  autoconfigure:
+    # The Lambda adapter brings a Spring Cloud Function auto-config that swaps Tomcat for a
+    # "serverless" web server, so locally nothing would listen on :8080. The Lambda handler
+    # doesn't need it (StreamLambdaHandlerTest proves that), so it is switched off everywhere.
+    exclude: org.springframework.cloud.function.serverless.web.ServerlessAutoConfiguration
   threads:
     virtual:
       enabled: true          # Java 21: each request runs on a cheap virtual thread
