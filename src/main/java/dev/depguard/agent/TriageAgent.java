@@ -6,6 +6,7 @@ import dev.depguard.agent.tools.VulnerabilityTools;
 import dev.depguard.dependency.Dependency;
 import dev.depguard.dependency.ParsedPom;
 import dev.depguard.dependency.PomParser;
+import dev.depguard.observability.AiTracing;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -29,6 +30,8 @@ import org.springframework.stereotype.Service;
  *       then the answer.</li>
  *   <li>Check the answer's CVE IDs against what the tools returned (guardrail).</li>
  * </ol>
+ *
+ * <p>The whole triage is traced as one "agent" span (see {@link AiTracing}); its trace ID is in the result.
  */
 @Service
 public class TriageAgent {
@@ -40,6 +43,7 @@ public class TriageAgent {
     private final VulnerabilityTools vulnerabilityTools;
     private final ExploitTools exploitTools;
     private final KnowledgeTools knowledgeTools;
+    private final AiTracing tracing;
     private final Resource systemPrompt;
     private final Resource userPrompt;
     private final String model;
@@ -50,6 +54,7 @@ public class TriageAgent {
             VulnerabilityTools vulnerabilityTools,
             ExploitTools exploitTools,
             KnowledgeTools knowledgeTools,
+            AiTracing tracing,
             @Value("classpath:prompts/triage-system.st") Resource systemPrompt,
             @Value("classpath:prompts/triage-user.st") Resource userPrompt,
             @Value("${spring.ai.bedrock.converse.chat.options.model:unknown}") String model) {
@@ -58,6 +63,7 @@ public class TriageAgent {
         this.vulnerabilityTools = vulnerabilityTools;
         this.exploitTools = exploitTools;
         this.knowledgeTools = knowledgeTools;
+        this.tracing = tracing;
         this.systemPrompt = systemPrompt;
         this.userPrompt = userPrompt;
         this.model = model;
@@ -66,41 +72,61 @@ public class TriageAgent {
     public TriageResult triage(String pomXml, String question) {
         long start = System.nanoTime();
         ParsedPom pom = pomParser.parse(pomXml);
-        if (pom.dependencies().isEmpty()) {
-            // Nothing to check: answer without spending tokens.
-            return new TriageResult("No dependencies with a known version were found in this pom.xml.",
-                    List.of(), List.of(), List.of(), List.of(), pom.skipped(), model, 0, 0, elapsedMs(start));
-        }
+        String userQuestion = question == null || question.isBlank() ? DEFAULT_QUESTION : question.trim();
+        String dependencies = formatDependencies(pom.dependencies());
 
-        TriageSession session = new TriageSession();
-        ChatResponse response = chatClient.prompt()
-                .system(systemPrompt)
-                .user(user -> user.text(userPrompt)
-                        .param("dependencies", formatDependencies(pom.dependencies()))
-                        .param("skipped", pom.skipped().isEmpty() ? "none" : String.join("\n", pom.skipped()))
-                        .param("question", question == null || question.isBlank() ? DEFAULT_QUESTION : question.trim()))
-                .tools(vulnerabilityTools, exploitTools, knowledgeTools)
-                .toolContext(Map.of(TriageSession.KEY, session))
-                .call()
-                .chatResponse();
+        // One "agent" span for the whole triage: the model, tool and HTTP spans below become its children.
+        return tracing.observe("depguard.triage", "agent", userQuestion + "\n\n" + dependencies, step -> {
+            if (pom.dependencies().isEmpty()) {
+                // Nothing to check: answer without spending tokens.
+                String answer = "No dependencies with a known version were found in this pom.xml.";
+                step.output(answer);
+                return new TriageResult(answer, List.of(), List.of(), List.of(), List.of(), pom.skipped(), model,
+                        0, 0, elapsedMs(start), step.traceId());
+            }
 
-        String answer = response == null || response.getResult() == null
-                ? ""
-                : response.getResult().getOutput().getText();
-        CveCitationGuard.Result citations = CveCitationGuard.check(answer, session.knownCves());
-        Usage usage = response == null ? null : response.getMetadata().getUsage();
+            TriageSession session = new TriageSession();
+            ChatResponse response = chatClient.prompt()
+                    .system(systemPrompt)
+                    .user(user -> user.text(userPrompt)
+                            .param("dependencies", dependencies)
+                            .param("skipped", pom.skipped().isEmpty() ? "none" : String.join("\n", pom.skipped()))
+                            .param("question", userQuestion))
+                    .tools(vulnerabilityTools, exploitTools, knowledgeTools)
+                    .toolContext(Map.of(TriageSession.KEY, session))
+                    .call()
+                    .chatResponse();
 
-        return new TriageResult(
-                answer,
-                citations.cited(),
-                citations.unverified(),
-                session.toolCalls(),
-                session.sources(),
-                pom.skipped(),
-                model,
-                usage == null ? null : usage.getPromptTokens(),
-                usage == null ? null : usage.getCompletionTokens(),
-                elapsedMs(start));
+            String answer = response == null || response.getResult() == null
+                    ? ""
+                    : response.getResult().getOutput().getText();
+            CveCitationGuard.Result citations = CveCitationGuard.check(answer, session.knownCves());
+            Usage usage = response == null ? null : response.getMetadata().getUsage();
+
+            // What Langfuse shows for this trace: the answer, and the facts you'd filter on.
+            step.output(answer);
+            step.metadata("dependencies", pom.dependencies().size());
+            step.metadata("tool_calls", session.toolCalls().size());
+            step.metadata("cited_cves", citations.cited().size());
+            step.metadata("unverified_cves", citations.unverified().size());
+            step.metadata("sources", session.sources().size());
+            if (!citations.unverified().isEmpty()) {
+                step.warning("Guardrail: the answer cites CVEs no tool returned: " + citations.unverified());
+            }
+
+            return new TriageResult(
+                    answer,
+                    citations.cited(),
+                    citations.unverified(),
+                    session.toolCalls(),
+                    session.sources(),
+                    pom.skipped(),
+                    model,
+                    usage == null ? null : usage.getPromptTokens(),
+                    usage == null ? null : usage.getCompletionTokens(),
+                    elapsedMs(start),
+                    step.traceId());
+        });
     }
 
     /** One line per dependency: "groupId:artifactId:version (scope)". */

@@ -7,6 +7,7 @@ import dev.depguard.agent.tools.ExploitTools;
 import dev.depguard.agent.tools.KnowledgeTools;
 import dev.depguard.agent.tools.VulnerabilityTools;
 import dev.depguard.dependency.PomParser;
+import dev.depguard.observability.AiTracing;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -54,6 +55,7 @@ class TriageAgentTest {
                 mock(VulnerabilityTools.class),
                 mock(ExploitTools.class),
                 mock(KnowledgeTools.class),
+                AiTracing.noop(),
                 new ClassPathResource("prompts/triage-system.st"),
                 new ClassPathResource("prompts/triage-user.st"),
                 "fake-model");

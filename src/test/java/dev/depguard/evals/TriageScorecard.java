@@ -25,7 +25,7 @@ final class TriageScorecard {
      */
     record Run(String caseId, int repeat, long durationMs, int inputTokens, int outputTokens, int toolCalls,
                List<Check> checks, Verdict verdict, int judgeInputTokens, int judgeOutputTokens, String answer,
-               List<String> unverifiedCves) {
+               List<String> unverifiedCves, String traceId) {
     }
 
     /** Pass rate of one check across the runs where it applied. */

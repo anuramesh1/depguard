@@ -5,10 +5,10 @@ Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and wha
 
 Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
-> **Status: phases 1–4 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
-> knowledge base of every OSV Maven advisory plus official migration guides, and quality evals (golden sets graded by
-> code checks and an LLM judge). 63 tests (3 of them need Docker), plus 2 eval suites run with `-Pevals`.
-> All three verified end to end against live data and Bedrock.
+> **Status: phases 1–5 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
+> knowledge base of every OSV Maven advisory plus official migration guides, quality evals (golden sets graded by
+> code checks and an LLM judge), and LLM tracing to Langfuse (every model call, tool call and retrieval, with cost).
+> 71 tests (3 of them need Docker), plus 2 eval suites run with `-Pevals`.
 > Deploys to AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle) with `scripts/deploy.sh`;
 > removed with `scripts/teardown.sh`.
 
@@ -16,7 +16,7 @@ Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**.
 
 ## Architecture
 
-![DepGuard architecture on AWS, drawn with service icons: a developer sends a pom.xml to Amazon API Gateway, which invokes a Java 21 Lambda with SnapStart running Spring Boot. Inside it, StreamLambdaHandler passes the request to the controllers. /api/scans goes to ScanService and OsvClient, which calls OSV.dev. /api/triage goes to TriageAgent, which calls Claude on Amazon Bedrock and uses four tools: the scan, EpssClient and KevClient (FIRST EPSS and CISA KEV), and HybridRetriever, which embeds the question with Titan and searches Aurora Serverless v2 (pgvector + full-text) through the RDS Data API. Logs go to CloudWatch. Deploying: Maven builds the zip, Terraform uploads it through S3 to a new SnapStart version, then a health check. An ingest run fills the knowledge base from the OSV export and migration guides. Later phases add evals, Langfuse and Spring Security.](docs/architecture/depguard-architecture-aws.png)
+![DepGuard architecture on AWS, drawn with service icons: a developer sends a pom.xml to Amazon API Gateway, which invokes a Java 21 Lambda with SnapStart running Spring Boot. Inside it, StreamLambdaHandler passes the request to the controllers. /api/scans goes to ScanService and OsvClient, which calls OSV.dev. /api/triage goes to TriageAgent, which calls Claude on Amazon Bedrock and uses four tools: the scan, EpssClient and KevClient (FIRST EPSS and CISA KEV), and HybridRetriever, which embeds the question with Titan and searches Aurora Serverless v2 (pgvector + full-text) through the RDS Data API. Logs go to CloudWatch. Deploying: Maven builds the zip, Terraform uploads it through S3 to a new SnapStart version, then a health check. An ingest run fills the knowledge base from the OSV export and migration guides. Traces go to Langfuse Cloud over OTLP. Later phases add caching, a model benchmark and Spring Security.](docs/architecture/depguard-architecture-aws.png)
 
 1. **Request:** a client posts a `pom.xml` over HTTPS to **API Gateway**, which throttles it to 5 requests/s and invokes the Lambda's `live` alias.
 2. **Inside Lambda:** `StreamLambdaHandler` turns the API Gateway event into a normal servlet request, so the same Spring controller runs
@@ -30,7 +30,9 @@ Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**.
    with **Titan Text Embeddings v2** and stores them in Postgres with pgvector. Re-runs embed only what changed.
 4. **Deploy:** `scripts/deploy.sh` runs the tests, builds `target/depguard-lambda.zip` and applies the Terraform in `infra/serverless/`.
    SnapStart snapshots the started app, so cold starts don't pay the Spring Boot startup cost.
-5. **Locally:** `./mvnw spring-boot:run` serves the same controller on Tomcat at port 8080, and the knowledge base is
+5. **Tracing:** each triage is one trace in **Langfuse**: the agent step, every model call (prompt, answer, tokens,
+   cost), every tool call and retrieval. Spring AI's Micrometer observations become OpenTelemetry spans, sent over OTLP.
+6. **Locally:** `./mvnw spring-boot:run` serves the same controller on Tomcat at port 8080, and the knowledge base is
    the docker-compose Postgres. There is no API Gateway or Lambda handler locally.
 
 The dashed panel shows later phases.
@@ -261,12 +263,75 @@ It overwrites `target/evals/triage-scorecard.*`, so copy the file first to keep 
 commit SHAs). The evals job runs only when started by hand and only after an AWS role for GitHub (OIDC, no stored keys)
 is created; see [infra/ci/README.md](infra/ci/README.md).
 
+## Observability (phase 5): what happened inside each triage?
+
+Evals say *how good* answers are on average; tracing shows *why* one answer came out the way it did. Every triage is
+sent to **[Langfuse](https://langfuse.com)** (Cloud, free Hobby plan) as one trace:
+
+```
+depguard.triage                      agent      input: question + dependencies · output: the answer
+│                                               metadata: tool_calls, cited_cves, unverified_cves, sources
+│                                               level WARNING when the citation guardrail fires
+├── spring_ai chat_client
+│   ├── chat us.anthropic.claude-haiku…  generation  prompt · completion · tokens · cost      (×3-5 rounds)
+│   ├── tool_call findVulnerabilities    tool        arguments · result
+│   ├── tool_call getExploitProbability  tool
+│   ├── tool_call checkKnownExploited    tool
+│   └── tool_call searchAdvisories       tool
+│       └── depguard.retrieval           retriever   query · hits with vector rank, keyword rank, RRF score
+```
+
+**Turning it on:** create a Langfuse project, then put `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and
+`LANGFUSE_HOST` (EU or US region; `LANGFUSE_BASE_URL`, the name in Langfuse's own snippet, works too; quotes are fine) in `.env`. Without keys, tracing is off and nothing else changes.
+`scripts/deploy.sh` passes the same keys to Lambda. Every `/api/triage` response includes its `traceId`.
+
+| Concept | Where |
+|---|---|
+| Spans exported over OTLP/HTTP to Langfuse; exporter exists only when keys are set | [observability/LangfuseConfig.java](src/main/java/dev/depguard/observability/LangfuseConfig.java) |
+| Application spans (agent, retriever) with Langfuse attributes: input, output, metadata, WARNING level | [observability/AiTracing.java](src/main/java/dev/depguard/observability/AiTracing.java) |
+| Prompt, completion and **cost** on every model call; arguments and results on every tool call | [observability/ChatContentObservationFilter.java](src/main/java/dev/depguard/observability/ChatContentObservationFilter.java), [ModelPricing](src/main/java/dev/depguard/observability/ModelPricing.java) |
+| Flush spans before the response on Lambda (it freezes the process right after) | [observability/TraceFlushFilter.java](src/main/java/dev/depguard/observability/TraceFlushFilter.java) |
+| Eval runs as Langfuse sessions, with judge and check scores attached to each trace | [evals/LangfuseScores.java](src/test/java/dev/depguard/evals/LangfuseScores.java), `TriageEval` |
+
+**Design notes (things that were not obvious):**
+- **Spring AI 2.x doesn't put prompts on spans.** `spring.ai.chat.observations.log-prompt` now writes to the *log*;
+  Langfuse's Spring AI guide targets 1.x. A small Micrometer `ObservationFilter` copies prompt and completion onto
+  the model-call span as `gen_ai.prompt` / `gen_ai.completion`, which Langfuse reads.
+- **Cost is computed, not looked up.** Langfuse prices models by name, and Bedrock IDs such as
+  `us.anthropic.claude-haiku-4-5-20251001-v1:0` may not match its list, so the span carries `gen_ai.usage.cost` from
+  a small price table in `application.yml`.
+- **Fewer, better spans.** With default instrumentation a triage produced ~95 spans, 77 of them one HTTP GET per OSV
+  advisory. Langfuse bills per span (50k/month free), and the tool spans already time those calls, so HTTP
+  request spans are switched off: ~15 spans per triage, i.e. ~3,000 triages a month on the free plan.
+- **Sampling is 100%.** Spring Boot's default samples 10% of traces; every triage matters here.
+- **Content capture is switchable** (`LANGFUSE_CAPTURE_CONTENT=false`): then traces keep tokens, cost, latency,
+  tool names and errors, but no prompts, answers or pom contents. Pom files aren't secret, but in a company they
+  reveal internal library names.
+- **Lambda needs an explicit flush.** Spans are normally exported in the background every few seconds; Lambda freezes
+  the process once the response is sent, so on Lambda a filter flushes before returning (a few hundred ms).
+- **Model name on generations.** Spring AI records the *request* model, which is `none` when the model comes from
+  defaults (Bedrock here); the filter sets `langfuse.observation.model.name` to the real model ID.
+- **Only traces are exported.** The OpenTelemetry starter also turns on OTLP metrics and log export to
+  `localhost:4318`, which failed every minute; both are switched off.
+- **Secrets:** the keys live in `.env` (gitignored) locally. On Lambda they are environment variables set by
+  Terraform; production should read them from Secrets Manager instead (see the production checklist).
+
+**Verified on Langfuse Cloud** (2026-11-21, read back through Langfuse's v2 observations and v3 scores APIs): one triage
+= 15-20 observations (1 agent, 4 generations with model, tokens and cost, 5 tools, 2 retrievers, 2 embeddings, plus
+Spring AI's chat-client spans), ~$0.014-0.026 per trace; a smoke eval run = one session of 10 traces with 7 scores each.
+
+**Evals + tracing:** with keys set, each eval run is a Langfuse **session** (`eval-YYYYMMDD-HHMMSS`) and every trace
+gets scores (`judge.factual_accuracy`, `judge.upgrade_notes_accuracy`, `eval.gates_passed`, `eval.top_pick`, …).
+The session is set explicitly (`AiTracing.inSession`) on DepGuard's root span; OpenTelemetry baggage was tried first,
+but Spring Boot's OpenTelemetry bridge doesn't support local baggage fields. That's the run history the scorecards lacked: filter traces by a low score and open the exact prompts and tool
+results that produced the answer.
+
 ## Local demo (free)
 
 Prerequisite: **JDK 21+** (`brew install --cask temurin@21`). Maven comes with the project (`./mvnw`).
 
 ```bash
-./mvnw test                     # 63 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
+./mvnw test                     # 71 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
 ./mvnw spring-boot:run          # starts on http://localhost:8080
 
 curl -s -X POST localhost:8080/api/scans \
@@ -434,7 +499,8 @@ and DepGuard needs the internet to call OSV. Two ways to avoid that:
 | Cost protection | Throttle | AWS Budgets alert, per-client usage plans, reserved concurrency as a hard cap |
 | Terraform state | Local file | S3 backend with state locking (`use_lockfile = true`), versioning and encryption |
 | Deployment | `scripts/deploy.sh` from a laptop | CI/CD (GitHub Actions or Jenkins) assuming an AWS role via OIDC, so no long-lived keys; canary releases by shifting alias weights |
-| Monitoring | CloudWatch logs | Alarms on 5xx, latency and throttles; X-Ray tracing; Langfuse for LLM traces (phase 5) |
+| Monitoring | CloudWatch logs; Langfuse traces | Alarms on 5xx, latency and throttles; Langfuse alerts on cost and error rate |
+| Secrets | Langfuse keys as Lambda environment variables (from `.env` via Terraform) | Secrets Manager, read at startup; no secrets in Terraform state |
 
 ### Cache: Redis (ElastiCache) or pgvector?
 
@@ -451,7 +517,7 @@ The phase 6 semantic cache answers "have we answered a question like this before
 | **2** ✅ | Spring AI agent on Bedrock with tools (OSV, EPSS, CISA KEV), prompt templates, citation guardrail | Agent tool calling, prompt design |
 | **3** ✅ | Hybrid RAG over advisories and migration guides (pgvector + full-text + RRF), Aurora via the Data API | RAG, data |
 | **4** ✅ | Golden-set evals: oracle from live OSV/EPSS/KEV, code checks + Nova Pro judge, retrieval metrics, CI workflow | Evals design |
-| 5 | Langfuse traces: tokens, cost, latency, failures | LLM observability |
+| **5** ✅ | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability |
 | 6 | Semantic cache, prompt caching, model routing | Cost and performance optimization |
 | 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection |
 | 8 | Spring Security (JWT, roles), human-approved upgrade PRs, production hardening of the AWS stack | Security, guardrails, cloud |

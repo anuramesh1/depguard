@@ -34,6 +34,25 @@ variable "aurora_engine_version" {
   default     = "16.9"
 }
 
+variable "langfuse_host" {
+  description = "Langfuse Cloud region: https://cloud.langfuse.com (EU) or https://us.cloud.langfuse.com (US)."
+  type        = string
+  default     = "https://cloud.langfuse.com"
+}
+
+variable "langfuse_public_key" {
+  description = "Langfuse project public key. Empty = no tracing. scripts/deploy.sh passes it from .env."
+  type        = string
+  default     = ""
+}
+
+variable "langfuse_secret_key" {
+  description = "Langfuse project secret key. Passed from .env by scripts/deploy.sh; never put it in a .tf file."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "memory_mb" {
   description = "Lambda memory. Lambda gives CPU in proportion to memory; 1024 MB suits Spring Boot."
   type        = number

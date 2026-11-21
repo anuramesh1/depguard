@@ -31,7 +31,7 @@ class TriageChecksTest {
             List.of("CVE-2021-44228"), List.of("PWNED"), null, null);
 
     private static TriageResult result(String answer, List<String> unverified) {
-        return new TriageResult(answer, List.of(), unverified, List.of(), List.of(), List.of(), "fake", 0, 0, 0);
+        return new TriageResult(answer, List.of(), unverified, List.of(), List.of(), List.of(), "fake", 0, 0, 0, null);
     }
 
     private static Check check(List<Check> checks, String name) {

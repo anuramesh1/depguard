@@ -38,7 +38,7 @@ for example that spring-web 5 → 6 also needs Java 17+ and the `javax` → `jak
 | **Batching** | One OSV batch query per pom; an ingest run that embeds new or changed advisories in bulk (content hashes skip the rest) |
 | **Model routing** | A small model for classifying and extracting, a larger one for the final triage reasoning |
 | **Model selection** | A benchmark harness runs one golden set on several models: accuracy, p95 latency, cost per query, hallucination rate |
-| **Observability** | Spring AI Micrometer/OpenTelemetry traces to Langfuse: tokens, cost and failures per trace |
+| **Observability** | Spring AI Micrometer observations → OpenTelemetry spans → Langfuse: one trace per triage with model calls (prompt, tokens, cost), tool calls, retrieval and guardrail warnings; eval scores attached |
 | **Security** | JWT auth with roles: `VIEWER` can scan, `MAINTAINER` can approve upgrade PRs |
 | **Data** | Aurora Serverless v2 (Postgres + pgvector) through the RDS Data API |
 | **Cloud** | API Gateway + Lambda (Java 21, SnapStart) via Terraform; about $0 while idle |
@@ -73,8 +73,8 @@ Each phase ends with something that can be demoed.
 | 2 | Spring AI agent on Amazon Bedrock with tools (OSV, EPSS, CISA KEV); prompt templates in `resources/prompts/` | Tool calling, prompt design | ✅ Done |
 | 3 | Hybrid RAG over advisories and migration guides; Aurora Serverless v2 via the RDS Data API | RAG, data | ✅ Done |
 | 4 | Golden sets (16 triage poms, 30 retrieval queries), oracle from live data, code checks + LLM judge, CI workflow | Evals | ✅ Done |
-| 5 | Langfuse traces: tokens, cost, latency, failures | LLM observability | ⏭️ Next |
-| 6 | Semantic cache, prompt caching, model router, with before/after numbers | Cost and performance | |
+| 5 | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability | ✅ Done |
+| 6 | Semantic cache, prompt caching, model router, with before/after numbers | Cost and performance | ⏭️ Next |
 | 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection | |
 | 8 | Spring Security, human-approved upgrade PRs, production hardening | Security, guardrails | |
 

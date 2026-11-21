@@ -10,8 +10,12 @@ import dev.depguard.evals.GoldenSet.TriageCase;
 import dev.depguard.evals.TriageOracle.Expected;
 import dev.depguard.exploit.EpssClient;
 import dev.depguard.exploit.KevClient;
+import dev.depguard.observability.AiTracing;
+import dev.depguard.observability.LangfuseProperties;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -50,6 +54,9 @@ import tools.jackson.databind.json.JsonMapper;
  * isn't called, the saved answers are graded again. Copy the file first if you want to keep the old grades:
  * every run, replay included, writes target/evals/triage-scorecard.md and .json.
  *
+ * <p>With Langfuse keys set, each eval run is a Langfuse session and every trace gets its scores (judge dimensions,
+ * gates, top pick): the run history, with the full trace behind every number.
+ *
  * <p>Fails only on gate checks (grounding and safety); quality checks are tracked in the scorecard. Each case runs
  * more than once by default because the model is not deterministic: a failure in one run out of three is a real,
  * measurable problem, and a single run can't show it.
@@ -69,6 +76,7 @@ class TriageEval {
     @Autowired EpssClient epssClient;
     @Autowired KevClient kevClient;
     @Autowired ChatModel chatModel;
+    @Autowired LangfuseProperties langfuse;
 
     @Test
     void triageGoldenSet() throws Exception {
@@ -92,6 +100,8 @@ class TriageEval {
             expected.put(c.id(), oracle.expectedFor(c.pomXml()));
         }
         TriageJudge judge = useJudge ? new TriageJudge(chatModel) : null;
+        // One Langfuse session per eval run: its traces are grouped together, and the scores attach to them.
+        String evalRunId = "eval-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
 
         // One task per (case, run): either a fresh agent answer, or a saved one when replaying.
         List<Callable<TriageScorecard.Run>> tasks = new ArrayList<>();
@@ -99,7 +109,7 @@ class TriageEval {
             for (TriageCase c : cases) {
                 for (int repeat = 1; repeat <= repeats; repeat++) {
                     int r = repeat;
-                    tasks.add(() -> grade(c, r, expected.get(c.id()), agent.triage(c.pomXml(), c.question()), judge));
+                    tasks.add(() -> grade(c, r, expected.get(c.id()), triageInSession(c, evalRunId), judge));
                 }
             }
         } else {
@@ -114,6 +124,11 @@ class TriageEval {
         }
 
         TriageScorecard scorecard = new TriageScorecard(runAll(tasks), !replayFile.isBlank());
+        if (langfuse.enabled() && replayFile.isBlank()) {
+            LangfuseScores scores = new LangfuseScores(langfuse);
+            int sent = scorecard.runs().stream().mapToInt(run -> scores.send(run, evalRunId)).sum();
+            System.out.println("Langfuse: session " + evalRunId + ", " + sent + " scores attached to the traces");
+        }
         String markdown = scorecard.markdown();
         Path dir = Path.of("target", "evals");
         Files.createDirectories(dir);
@@ -123,6 +138,11 @@ class TriageEval {
         System.out.println(markdown);
 
         assertThat(scorecard.gateFailures()).as("gate checks (grounding and safety) must pass on every run").isEmpty();
+    }
+
+    /** Runs one triage with the eval run's ID as its Langfuse session, so the run's traces are grouped. */
+    private TriageResult triageInSession(TriageCase c, String evalRunId) {
+        return AiTracing.inSession(evalRunId, () -> agent.triage(c.pomXml(), c.question()));
     }
 
     /** Runs the tasks in parallel (bounded), keeping their results. */
@@ -160,7 +180,7 @@ class TriageEval {
                 judgement == null ? null : judgement.verdict(),
                 judgement == null ? 0 : judgement.inputTokens(),
                 judgement == null ? 0 : judgement.outputTokens(),
-                result.answer(), result.unverifiedCves());
+                result.answer(), result.unverifiedCves(), result.traceId());
     }
 
     /** A saved run as a TriageResult, so the checks can't tell it from a live one. */
@@ -168,7 +188,7 @@ class TriageEval {
         return new TriageResult(saved.answer(), List.of(),
                 saved.unverifiedCves() == null ? List.of() : saved.unverifiedCves(),
                 Collections.nCopies(saved.toolCalls(), "(replayed)"), List.of(), List.of(), "replayed",
-                saved.inputTokens(), saved.outputTokens(), saved.durationMs());
+                saved.inputTokens(), saved.outputTokens(), saved.durationMs(), saved.traceId());
     }
 
     private static List<TriageScorecard.Run> loadRuns(Path file) throws Exception {

@@ -155,6 +155,12 @@ step(1270, 352, 230, 80, "OSV.dev API", ["advisories (incl. GitHub", "Advisory D
 arrow("M1160 512 L 1266 512", GREEN, "HTTPS", (1213, 500))
 step(1270, 472, 230, 80, "FIRST EPSS · CISA KEV", ["exploit probability ·", "known exploited, free"], GREEN, "#EBFBEE")
 
+# Traces: every triage as a span tree (model calls, tool calls, retrieval) with tokens, cost and eval scores
+arrow("M1180 562 L 1290 562 L 1290 600", GREY, "OTLP traces", (1222, 584), dashed=True)
+image("langfuse", 1265, 605, 50)
+text(1325, 626, "Langfuse Cloud", size=16, color=GREY, weight="bold", anchor="start")
+text(1325, 646, "traces · cost · eval scores", size=13.5, anchor="start")
+
 # ------------------------------------------------------------------ story 2: deploying
 panel(30, 720, 760, 210, "②  Deploying  —  scripts/deploy.sh, about 3–5 minutes", "#F8F9FA", GREY)
 icon("apachemaven", 120, 815, ["./mvnw -Plambda package", "tests + Lambda zip"], size=50, label_size=14)
@@ -172,7 +178,7 @@ text(50, 918, "Quality: ./mvnw test -Pevals  —  golden sets, code checks + an 
 # ------------------------------------------------------------------ story 3: later phases
 panel(810, 720, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
 badge(940, 805, "6", ["Semantic cache, model routing", "phase 6 · cost and latency"], PURPLE, "#F3F0FF")
-icon("langfuse", 1190, 815, ["Langfuse", "phase 5 · LLM traces"], size=50, label_size=14)
+badge(1190, 805, "7", ["Model benchmark", "phase 7 · quality vs cost"], PURPLE, "#F3F0FF")
 icon("springsecurity", 1440, 815, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
 
 # ------------------------------------------------------------------ write

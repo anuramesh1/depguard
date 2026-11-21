@@ -50,6 +50,22 @@ depguard:
     read-timeout: 15s
     kev-cache-ttl: 6h        # the catalog changes a few times a week
 
+  langfuse:
+    # Tracing to Langfuse Cloud (phase 5). Off unless both keys are set: put them in .env (gitignored).
+    host: ${LANGFUSE_HOST:${LANGFUSE_BASE_URL:https://cloud.langfuse.com}}   # LANGFUSE_BASE_URL: the name Langfuse's snippet uses
+    public-key: ${LANGFUSE_PUBLIC_KEY:}
+    secret-key: ${LANGFUSE_SECRET_KEY:}
+    capture-content: ${LANGFUSE_CAPTURE_CONTENT:true}   # prompts, answers, tool results; false = metadata only
+    flush-after-request: ${LANGFUSE_FLUSH_AFTER_REQUEST:false}  # true on Lambda (Terraform sets it)
+  pricing:
+    # USD per million tokens (us-east-1 on-demand; check current Bedrock prices). Puts a cost on every model call.
+    models:
+      - model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+        input-per-million: 1.00
+        output-per-million: 5.00
+      - model: us.amazon.nova-pro-v1:0
+        input-per-million: 0.80
+        output-per-million: 3.20
   rag:
     # "jdbc" = local docker-compose Postgres; "data-api" = Aurora on AWS (Terraform sets this on Lambda)
     store: ${DEPGUARD_RAG_STORE:jdbc}
@@ -93,3 +109,24 @@ management:
     web:
       exposure:
         include: health,info # expose only what a load balancer needs
+  tracing:
+    sampling:
+      probability: 1.0       # Boot's default (0.1) would drop 9 of 10 traces; every triage matters here
+    export:
+      otlp:
+        enabled: false       # Boot's generic exporter is off: LangfuseConfig adds the Langfuse one when keys are set
+  otlp:
+    metrics:
+      export:
+        enabled: false       # the OpenTelemetry starter also exports metrics to localhost:4318; Langfuse is traces only
+  logging:
+    export:
+      otlp:
+        enabled: false       # same for logs
+  observations:
+    enable:
+      # One span per HTTP request in and out would be ~80 spans per triage (one per OSV advisory fetch): noise in
+      # Langfuse, and each span counts against its free quota. The tool spans already time every lookup, and
+      # without the server span the trace is named after its root, "depguard.triage".
+      http.server.requests: false
+      http.client.requests: false

@@ -61,6 +61,14 @@ resource "aws_lambda_function" "app" {
       DEPGUARD_RAG_CLUSTER_ARN                = aws_rds_cluster.knowledge.arn
       DEPGUARD_RAG_SECRET_ARN                 = aws_rds_cluster.knowledge.master_user_secret[0].secret_arn
       SPRING_AI_BEDROCK_TITAN_EMBEDDING_MODEL = var.embedding_model_id
+      # Tracing to Langfuse (off when the keys are empty). Lambda freezes the process after each response,
+      # so spans must be flushed before it returns (see TraceFlushFilter).
+      # Demo trade-off: the secret key sits in the Lambda configuration and the local Terraform state (both
+      # encrypted at rest). Production: keep it in Secrets Manager and read it at startup.
+      LANGFUSE_HOST                = var.langfuse_host
+      LANGFUSE_PUBLIC_KEY          = var.langfuse_public_key
+      LANGFUSE_SECRET_KEY          = var.langfuse_secret_key
+      LANGFUSE_FLUSH_AFTER_REQUEST = "true"
     }
   }
 

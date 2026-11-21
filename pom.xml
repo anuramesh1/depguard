@@ -95,6 +95,17 @@
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>rdsdata</artifactId>
         </dependency>
+        <!-- Tracing: Micrometer observations (Spring AI emits them for model and tool calls) exported as
+             OpenTelemetry spans over OTLP/HTTP to Langfuse. Boot 4's own starter; versions come from the Boot parent. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+        <!-- The OTLP/HTTP span exporter LangfuseConfig uses (version managed by Spring Boot) -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
         <!-- Maven's own version comparison ("2.9.10.8" vs "2.10.0", "1.0-RC1" vs "1.0") -->
         <dependency>
             <groupId>org.apache.maven</groupId>

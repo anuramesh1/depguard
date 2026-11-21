@@ -14,6 +14,7 @@ import java.util.List;
  * @param model          the Bedrock model that answered
  * @param inputTokens    tokens sent to the model, across all tool-calling rounds (drives cost)
  * @param outputTokens   tokens the model generated
+ * @param traceId        the request's trace ID: find it in Langfuse (null when tracing isn't active)
  */
 public record TriageResult(
         String answer,
@@ -25,5 +26,6 @@ public record TriageResult(
         String model,
         Integer inputTokens,
         Integer outputTokens,
-        long durationMs) {
+        long durationMs,
+        String traceId) {
 }

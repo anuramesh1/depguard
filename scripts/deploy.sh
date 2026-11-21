@@ -29,6 +29,18 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/nu
   || fail "No AWS credentials. Run 'aws sso login' (or 'aws configure'), or set AWS_PROFILE."
 echo "AWS account ****${ACCOUNT_ID: -4}, region $REGION"   # masked: don't print full account IDs
 
+# Langfuse tracing (optional): pass the keys from the gitignored .env to Terraform as TF_VAR_* environment
+# variables, so they are never typed on a command line or written to a .tf file. Only these 3 lines are read.
+if [[ -f "$ROOT/.env" ]]; then
+  # Last value for a key, without surrounding quotes (Langfuse's setup snippet quotes them).
+  env_value() { sed -n "s/^$1=//p" "$ROOT/.env" | tail -1 | sed -E "s/^[\"'](.*)[\"']$/\\1/"; }
+  export TF_VAR_langfuse_public_key="$(env_value LANGFUSE_PUBLIC_KEY)"
+  export TF_VAR_langfuse_secret_key="$(env_value LANGFUSE_SECRET_KEY)"
+  host="$(env_value LANGFUSE_HOST)"; [[ -z "$host" ]] && host="$(env_value LANGFUSE_BASE_URL)"
+  [[ -n "$host" ]] && export TF_VAR_langfuse_host="$host"
+fi
+[[ -n "${TF_VAR_langfuse_public_key:-}" ]] && echo "Langfuse tracing: on" || echo "Langfuse tracing: off (no keys in .env)"
+
 # Terraform reads terraform.tfvars automatically, so teardown.sh reuses the same region.
 # The file is gitignored (*.tfvars).
 echo "region = \"$REGION\"" > "$TF_DIR/terraform.tfvars"

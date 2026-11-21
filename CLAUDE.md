@@ -23,7 +23,12 @@ This is a public repo: keep personal notes and context out of committed files. T
 - Plain blocking code on virtual threads (`spring.threads.virtual.enabled=true`), no reactive stack.
 - Errors are RFC 9457 problem details. Upstream failures return 503 with a generic message; details go only to logs.
 - The pom parser rejects DOCTYPE (XXE protection). Dependencies with unknown versions are reported as `skipped`, never guessed.
-- Langfuse is deferred to phase 5 (its self-hosted stack needs ClickHouse and MinIO). docker-compose has Postgres+pgvector (RAG, local) and Redis (phase 6).
+- **Langfuse Cloud** (free Hobby plan; owner's choice over self-hosting) for traces. docker-compose has Postgres+pgvector (RAG, local) and Redis (phase 6).
+- **Tracing (phase 5):** `observability/` package. Boot 4 `spring-boot-starter-opentelemetry` + `opentelemetry-exporter-otlp`;
+  Boot's own OTLP exporter disabled; `LangfuseConfig` adds an `OtlpHttpSpanExporter` only when both keys are set.
+  Sampling 1.0; `http.server/client.requests` observations disabled (were ~77 spans/triage). Spring AI 2.x log-prompt only
+  logs, so `ChatContentObservationFilter` puts gen_ai.prompt/completion/usage.cost on model spans and langfuse input/output on
+  tool spans. Content capture is switchable (`LANGFUSE_CAPTURE_CONTENT`). `TraceFlushFilter` flushes per request on Lambda.
 - **RAG (phase 3):** own `AdvisoryStore` with hand-written hybrid SQL (`HybridSearchSql`: pgvector cosine + full-text OR-query, RRF k=60),
   not Spring AI's PgVectorStore (needs JDBC). `JdbcAdvisoryStore` locally, `DataApiAdvisoryStore` on AWS (RDS Data API: Lambda stays out of the VPC).
   Embeddings: Titan Text v2 via Spring AI `EmbeddingModel`, 1024 dims (Spring AI's Titan client sends no `dimensions`).
@@ -64,7 +69,13 @@ This is a public repo: keep personal notes and context out of committed files. T
     without calling the agent ($0 with `-Devals.judge=false`). Use replay when only graders change.
   - CI: `.github/workflows/ci.yml` (unit tests on push; evals manual + needs repo variable AWS_EVAL_ROLE_ARN from
     `infra/ci/` Terraform, not applied).
-- **Tests:** 63 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
+- **Phase 5 done (2026-11-21), verified on Langfuse Cloud (US region; keys in `.env` as LANGFUSE_PUBLIC_KEY/SECRET_KEY/BASE_URL,
+  quoted, which LangfuseProperties strips).** Trace = 15-20 observations with model name, tokens, cost. Eval run = session
+  (`AiTracing.inSession`, not baggage: OTel bridge doesn't support local baggage fields) + 7 scores per trace (`LangfuseScores`).
+  Reading data back: Langfuse removed v1 reads on 2026-11-16; use `/api/public/v2/observations` (needs fromStartTime/toStartTime)
+  and `/api/public/v3/scores`. OTLP metrics/log export disabled (starter defaulted to localhost:4318).
+  Prompt rule added after a gate failure: no major-version migration notes when the fix is same-major (Jackson 3 case).
+- **Tests:** 71 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
 - **Bedrock access:** this account can use Claude **Haiku 4.5** (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) and Titan Text Embeddings v2.
   Haiku 5.5 and Sonnet 5.5 return AccessDenied ("not available for this account"). The model is configurable (`model_id` in Terraform).
 - **Deploy:** never applied. Lambda zip ~45 MB, uploaded through S3. The account has no default VPC in us-east-1 (hence aurora.tf's own VPC).
@@ -76,8 +87,7 @@ This is a public repo: keep personal notes and context out of committed files. T
 ## Next steps
 1. Optionally deploy (`scripts/deploy.sh`, then `scripts/ingest.sh aws`) and try `/api/triage` on Lambda with the key.
    Verify SnapStart + Bedrock credentials after restore, Aurora resume behaviour, and that a triage finishes inside API Gateway's 30 s.
-2. **Phase 5: Langfuse observability** (traces: tokens, cost, latency, failures per tool call). Before that, optionally
-   enable eval CI (`infra/ci/README.md`).
+2. **Phase 6: cost and performance** — Bedrock prompt caching, semantic cache (pgvector), model routing; before/after via evals + Langfuse cost.
 
 ## Running in IntelliJ
 - Open the `depguard` folder; IntelliJ imports the Maven project from `pom.xml`.
