@@ -52,8 +52,8 @@
   },
   {
     "id": "clean-pom",
-    "why": "Nothing vulnerable: the answer must not invent problems.",
-    "dependencies": ["org.slf4j:slf4j-api:2.0.16", "com.google.guava:guava:33.4.0-jre", "org.junit.jupiter:junit-jupiter:5.11.4:test"]
+    "why": "Nothing vulnerable: the answer must not invent problems. Live data drifts: Guava 33.4.0-jre gained an advisory in 2026-11; 33.8.0-jre was clean when updated.",
+    "dependencies": ["org.slf4j:slf4j-api:2.0.16", "com.google.guava:guava:33.8.0-jre", "org.junit.jupiter:junit-jupiter:5.11.4:test"]
   },
   {
     "id": "two-known-exploited",

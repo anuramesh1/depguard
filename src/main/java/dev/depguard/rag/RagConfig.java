@@ -1,5 +1,8 @@
 package dev.depguard.rag;
 
+import dev.depguard.cache.DataApiSqlRunner;
+import dev.depguard.cache.JdbcSqlRunner;
+import dev.depguard.cache.SqlRunner;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -39,5 +42,18 @@ class RagConfig {
             default -> throw new IllegalStateException(
                     "depguard.rag.store must be 'jdbc' or 'data-api', not '" + properties.store() + "'");
         };
+    }
+
+    /** Plain SQL for smaller tables (the answer cache), over the same database and connection type. */
+    @Bean
+    SqlRunner sqlRunner(RagProperties properties, @Value("${spring.ai.bedrock.aws.region}") String region) {
+        if (RagProperties.STORE_DATA_API.equals(properties.store())) {
+            RagProperties.DataApi dataApi = properties.dataApi();
+            RdsDataClient client = RdsDataClient.builder().region(Region.of(region)).build();
+            return new DataApiSqlRunner(client, dataApi.clusterArn(), dataApi.secretArn(), dataApi.database());
+        }
+        RagProperties.Jdbc jdbc = properties.jdbc();
+        return new JdbcSqlRunner(new SimpleDriverDataSource(new org.postgresql.Driver(), jdbc.url(), jdbc.username(),
+                jdbc.password()));
     }
 }

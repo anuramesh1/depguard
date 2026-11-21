@@ -1,14 +1,10 @@
 package dev.depguard.evals;
 
-import dev.depguard.agent.tools.VulnerabilityTools;
-import dev.depguard.agent.tools.VulnerabilityTools.VulnerabilityResult;
+import dev.depguard.agent.TriageFacts;
+import dev.depguard.agent.TriageFactsService;
 import dev.depguard.dependency.Dependency;
 import dev.depguard.dependency.ParsedPom;
 import dev.depguard.dependency.PomParser;
-import dev.depguard.exploit.EpssClient;
-import dev.depguard.exploit.EpssClient.EpssScore;
-import dev.depguard.exploit.KevClient;
-import dev.depguard.exploit.KevClient.KevStatus;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -19,9 +15,8 @@ import java.util.stream.Collectors;
 /**
  * Works out the correct triage for a pom from the same live data the agent sees, in plain code.
  *
- * <p>It calls the agent's own findVulnerabilities tool (so it sees exactly the advisories the model sees),
- * then EPSS and KEV for those CVEs, and applies the ranking rule from the system prompt:
- * known exploited (KEV) first, then EPSS exploit probability; test scope matters less.
+ * <p>It gathers the same facts the agent is shown (OSV advisories, EPSS and KEV per CVE) and applies the ranking
+ * rule itself: known exploited (KEV) first, then EPSS exploit probability; test scope matters less.
  * The checks then compare the agent's answer with this.
  */
 final class TriageOracle {
@@ -32,18 +27,14 @@ final class TriageOracle {
     static final double CLEAR_EPSS_GAP = 0.2;
 
     private final PomParser pomParser;
-    private final VulnerabilityTools vulnerabilityTools;
-    private final EpssClient epssClient;
-    private final KevClient kevClient;
+    private final TriageFactsService factsService;
 
-    TriageOracle(PomParser pomParser, VulnerabilityTools vulnerabilityTools, EpssClient epssClient, KevClient kevClient) {
+    TriageOracle(PomParser pomParser, TriageFactsService factsService) {
         this.pomParser = pomParser;
-        this.vulnerabilityTools = vulnerabilityTools;
-        this.epssClient = epssClient;
-        this.kevClient = kevClient;
+        this.factsService = factsService;
     }
 
-    /** One CVE as the agent's tools report it. {@code epss} is 0..1, or null if EPSS has no score. */
+    /** One CVE as the agent is shown it. {@code epss} is 0..1, or null if EPSS has no score. */
     record CveFact(String cve, String severity, String fixedVersion, Double epss, boolean knownExploited) {
     }
 
@@ -106,30 +97,26 @@ final class TriageOracle {
         }
     }
 
+    /**
+     * Uses the same fact gathering as the agent (so it judges the answer against exactly what the model was shown),
+     * but re-derives the ranking here, independently of the agent's code.
+     */
     Expected expectedFor(String pomXml) {
         ParsedPom pom = pomParser.parse(pomXml);
         Map<String, Dependency> byCoordinates = pom.dependencies().stream()
                 .collect(Collectors.toMap(d -> d.groupId() + ":" + d.artifactId() + ":" + d.version(),
                         Function.identity(), (a, b) -> a));
-        VulnerabilityResult result = vulnerabilityTools.findVulnerabilities(List.copyOf(byCoordinates.keySet()), null);
+        TriageFacts facts = factsService.gather(pom.dependencies());
 
-        List<String> allCves = result.vulnerable().stream()
-                .flatMap(v -> v.topAdvisories().stream()).flatMap(a -> a.cveIds().stream()).distinct().toList();
-        Map<String, Double> epss = allCves.isEmpty() ? Map.of() : epssClient.scores(allCves).stream()
-                .collect(Collectors.toMap(EpssScore::cve, EpssScore::probability, (a, b) -> a));
-        Map<String, KevStatus> kev = allCves.isEmpty() ? Map.of() : kevClient.lookup(allCves).stream()
-                .collect(Collectors.toMap(KevStatus::cve, Function.identity(), (a, b) -> a));
-
-        List<DependencyFacts> vulnerable = result.vulnerable().stream().map(v -> {
+        List<DependencyFacts> vulnerable = facts.vulnerable().stream().map(v -> {
             Dependency dep = byCoordinates.get(v.dependency());
-            List<String> cves = v.topAdvisories().stream().flatMap(a -> a.cveIds().stream()).distinct().toList();
             List<CveFact> cveFacts = v.topAdvisories().stream()
-                    .flatMap(a -> a.cveIds().stream().map(c -> new CveFact(c, String.valueOf(a.severity()),
-                            a.fixedVersion(), epss.get(c), kev.containsKey(c) && kev.get(c).knownExploited())))
+                    .flatMap(a -> a.cves().stream().map(c -> new CveFact(c.id(), String.valueOf(a.severity()),
+                            a.fixedVersion(), c.epss(), c.knownExploited())))
                     .toList();
-            boolean exploited = cves.stream().anyMatch(c -> kev.containsKey(c) && kev.get(c).knownExploited());
-            boolean ransomware = cves.stream().anyMatch(c -> kev.containsKey(c) && "Known".equalsIgnoreCase(kev.get(c).ransomwareUse()));
-            double maxEpss = cves.stream().mapToDouble(c -> epss.getOrDefault(c, 0.0)).max().orElse(0);
+            boolean exploited = cveFacts.stream().anyMatch(CveFact::knownExploited);
+            boolean ransomware = v.topAdvisories().stream().flatMap(a -> a.cves().stream()).anyMatch(TriageFacts.Cve::ransomwareUse);
+            double maxEpss = cveFacts.stream().mapToDouble(c -> c.epss() == null ? 0 : c.epss()).max().orElse(0);
             return new DependencyFacts(dep.artifactId(), v.dependency(), dep.scope(), v.recommendedVersion(),
                     v.advisoryCount(), exploited, ransomware, maxEpss, cveFacts);
         }).sorted(Comparator

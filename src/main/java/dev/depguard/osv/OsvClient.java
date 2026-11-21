@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dev.depguard.dependency.Dependency;
 import java.util.List;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -24,7 +25,15 @@ public class OsvClient {
 
     private static final String MAVEN = "Maven";
 
+    /**
+     * Most OSV requests in flight at once, across the whole app. The JDK HTTP client sends parallel requests as
+     * streams over one HTTP/2 connection, and OSV refuses more than its stream limit ("too many concurrent streams").
+     * Found in phase 6: four triages gathering facts at the same moment, one with 60 advisories, overflowed it.
+     */
+    static final int MAX_CONCURRENT_REQUESTS = 16;
+
     private final RestClient restClient;
+    private final Semaphore inFlight = new Semaphore(MAX_CONCURRENT_REQUESTS);
 
     public OsvClient(@Qualifier("osvRestClient") RestClient restClient) {
         this.restClient = restClient;
@@ -62,14 +71,29 @@ public class OsvClient {
     }
 
     public OsvVulnerability getVulnerability(String id) {
-        OsvVulnerability vulnerability = call(() -> restClient.get()
+        OsvVulnerability vulnerability = bounded(() -> call(() -> restClient.get()
                 .uri("/v1/vulns/{id}", id)
                 .retrieve()
-                .body(OsvVulnerability.class));
+                .body(OsvVulnerability.class)));
         if (vulnerability == null) {
             throw new OsvUnavailableException("OSV returned an empty advisory for " + id);
         }
         return vulnerability;
+    }
+
+    /** Waits for one of the {@link #MAX_CONCURRENT_REQUESTS} slots (virtual threads make waiting cheap). */
+    private <T> T bounded(Supplier<T> request) {
+        try {
+            inFlight.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new OsvUnavailableException("Interrupted while waiting to call OSV", e);
+        }
+        try {
+            return request.get();
+        } finally {
+            inFlight.release();
+        }
     }
 
     /** Turns any HTTP/network failure into one exception type the API layer knows how to report. */

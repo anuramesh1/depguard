@@ -25,7 +25,7 @@ final class TriageScorecard {
      */
     record Run(String caseId, int repeat, long durationMs, int inputTokens, int outputTokens, int toolCalls,
                List<Check> checks, Verdict verdict, int judgeInputTokens, int judgeOutputTokens, String answer,
-               List<String> unverifiedCves, String traceId) {
+               List<String> unverifiedCves, String traceId, long cacheReadTokens, long cacheWriteTokens) {
     }
 
     /** Pass rate of one check across the runs where it applied. */
@@ -95,8 +95,10 @@ final class TriageScorecard {
         }
 
         long[] latencies = runs.stream().mapToLong(Run::durationMs).sorted().toArray();
-        double agentCost = runs.stream().mapToDouble(r ->
-                (r.inputTokens() * AGENT_INPUT_PRICE + r.outputTokens() * AGENT_OUTPUT_PRICE) / 1e6).sum();
+        // Cached tokens are reported separately from inputTokens: reads at 0.1x, writes at 1.25x the input price.
+        double agentCost = runs.stream().mapToDouble(r -> (r.inputTokens() * AGENT_INPUT_PRICE
+                + r.outputTokens() * AGENT_OUTPUT_PRICE + r.cacheReadTokens() * AGENT_INPUT_PRICE * 0.1
+                + r.cacheWriteTokens() * AGENT_INPUT_PRICE * 1.25) / 1e6).sum();
         double judgeCost = runs.stream().mapToDouble(r ->
                 (r.judgeInputTokens() * JUDGE_INPUT_PRICE + r.judgeOutputTokens() * JUDGE_OUTPUT_PRICE) / 1e6).sum();
         md.append("\n## Latency and cost\n\n| Metric | Value |\n|---|---|\n");
@@ -107,6 +109,11 @@ final class TriageScorecard {
         md.append(String.format(Locale.ROOT, "| Mean tokens in / out | %.0f / %.0f |%n",
                 runs.stream().mapToInt(Run::inputTokens).average().orElse(0),
                 runs.stream().mapToInt(Run::outputTokens).average().orElse(0)));
+        md.append(String.format(Locale.ROOT, "| Mean cache read / write tokens | %.0f / %.0f |%n",
+                runs.stream().mapToLong(Run::cacheReadTokens).average().orElse(0),
+                runs.stream().mapToLong(Run::cacheWriteTokens).average().orElse(0)));
+        md.append(String.format(Locale.ROOT, "| Runs answered without a model call | %d |%n",
+                runs.stream().filter(r -> r.inputTokens() == 0 && r.cacheReadTokens() == 0).count()));
         md.append(String.format(Locale.ROOT, "| Agent cost per triage | $%.4f |%n", agentCost / Math.max(1, runs.size())));
         md.append(String.format(Locale.ROOT, "| Total cost of this eval run (agent + judge) | $%.2f |%n",
                 (replayed ? 0 : agentCost) + judgeCost));

@@ -27,14 +27,14 @@ for example that spring-web 5 → 6 also needs Java 17+ and the `javax` → `jak
 
 | Capability | How DepGuard does it |
 |---|---|
-| **Tool calling** | Agent tools: `findVulnerabilities` (OSV), `getExploitProbability` (EPSS), `checkKnownExploited` (CISA KEV), `searchAdvisories` (RAG) |
+| **Tool calling** | Facts (OSV, EPSS, CISA KEV) gathered in code; the model gets one tool, `searchAdvisories` (RAG), when a major upgrade needs migration notes |
 | **Planning** | Parse dependencies → look up advisories → rank by severity, EPSS and KEV → write the upgrade plan |
 | **Memory** | Each project's scan history ("what changed since last week?") |
 | **Retries** | Backoff on the NVD rate limit; fall back to OSV if NVD is down |
 | **Guardrails** | Never state a CVE that no tool returned (citation check); refuse off-topic questions; treat advisory text as data, not instructions |
 | **Human approval** | "Open a GitHub PR with the upgrade" waits for a person to approve it |
 | **RAG** | Hybrid search over every OSV Maven advisory and official migration guides: pgvector + Postgres full-text + Reciprocal Rank Fusion, in one SQL query |
-| **Caching** | Semantic cache in pgvector for repeated questions; Bedrock prompt caching for the long system prompt; HTTP cache for OSV/NVD |
+| **Caching** | Answer cache in pgvector (exact + similar question, 6 h TTL, versioned key); KEV feed cached 6 h; Bedrock prompt caching measured and not worth it after the workflow change |
 | **Batching** | One OSV batch query per pom; an ingest run that embeds new or changed advisories in bulk (content hashes skip the rest) |
 | **Model routing** | A small model for classifying and extracting, a larger one for the final triage reasoning |
 | **Model selection** | A benchmark harness runs one golden set on several models: accuracy, p95 latency, cost per query, hallucination rate |
@@ -74,8 +74,8 @@ Each phase ends with something that can be demoed.
 | 3 | Hybrid RAG over advisories and migration guides; Aurora Serverless v2 via the RDS Data API | RAG, data | ✅ Done |
 | 4 | Golden sets (16 triage poms, 30 retrieval queries), oracle from live data, code checks + LLM judge, CI workflow | Evals | ✅ Done |
 | 5 | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability | ✅ Done |
-| 6 | Semantic cache, prompt caching, model router, with before/after numbers | Cost and performance | ⏭️ Next |
-| 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection | |
+| 6 | Facts in code (workflow + agent), no-model route, answer cache; prompt caching measured and dropped: −59% cost, −47% latency, quality up | Cost and performance | ✅ Done |
+| 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection | ⏭️ Next |
 | 8 | Spring Security, human-approved upgrade PRs, production hardening | Security, guardrails | |
 
 ## Decisions
@@ -95,4 +95,6 @@ Each phase ends with something that can be demoed.
 4. **Grounded answers.** Every CVE in an AI answer is checked in code against what the tools returned; in a live run all 11 cited CVEs were verified. A triage costs about $0.015.
 5. **Measured quality.** Evals turned guesses into numbers: hybrid retrieval hit@5 0.87 vs 0.70 for vectors alone
    (after an eval exposed broken CVE-ID search), and the ranking rule followed in 100% of runs (from 97%).
-6. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.
+6. **Cheaper and faster, with better answers.** Moving fixed lookups from model tool calls into code cut cost per triage
+   59% and latency 47%, and every eval check reached 100%; repeated questions come from an answer cache in ~10 ms.
+7. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.

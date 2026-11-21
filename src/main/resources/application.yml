@@ -57,12 +57,19 @@ depguard:
     secret-key: ${LANGFUSE_SECRET_KEY:}
     capture-content: ${LANGFUSE_CAPTURE_CONTENT:true}   # prompts, answers, tool results; false = metadata only
     flush-after-request: ${LANGFUSE_FLUSH_AFTER_REQUEST:false}  # true on Lambda (Terraform sets it)
+  answer-cache:
+    # Reuse a recent answer for the same dependencies and (nearly) the same question: no model call, no cost.
+    enabled: ${DEPGUARD_ANSWER_CACHE:true}
+    ttl: 6h                      # exploit data changes daily; DepGuard caches KEV for 6 h too
+    similarity-threshold: 0.55   # measured: 3/6 paraphrases match, 0/7 different questions (see AnswerCacheProperties)
   pricing:
     # USD per million tokens (us-east-1 on-demand; check current Bedrock prices). Puts a cost on every model call.
     models:
       - model: us.anthropic.claude-haiku-4-5-20251001-v1:0
         input-per-million: 1.00
         output-per-million: 5.00
+        cache-read-per-million: 0.10   # prompt cache: reads at 0.1x input
+        cache-write-per-million: 1.25  # writes at 1.25x input (5-minute TTL)
       - model: us.amazon.nova-pro-v1:0
         input-per-million: 0.80
         output-per-million: 3.20

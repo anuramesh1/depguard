@@ -55,8 +55,9 @@ final class TriageChecks {
         }
 
         if (!expected.vulnerable().isEmpty()) {
-            List<String> missing = expected.vulnerable().stream().map(DependencyFacts::artifactId)
-                    .filter(id -> !AnswerParser.mentions(answer, id)).toList();
+            List<String> missing = expected.vulnerable().stream()
+                    .filter(d -> !mentionsDependency(answer, d))
+                    .map(DependencyFacts::artifactId).toList();
             checks.add(Check.of("mentions-every-vulnerable-dependency", true, missing.isEmpty(),
                     missing.isEmpty() ? "" : "missing: " + missing));
         }
@@ -89,6 +90,16 @@ final class TriageChecks {
             checks.add(Check.of("must-mention: " + regex, false, found, found ? "" : "not found"));
         }
         return checks;
+    }
+
+    /**
+     * The artifactId, or a groupId that ends in it: "com.thoughtworks.xstream 1.4.17 → 1.4.21" names xstream clearly
+     * even without ":xstream" (a grader false negative the evals hit in phase 6).
+     */
+    static boolean mentionsDependency(String answer, DependencyFacts d) {
+        String groupId = d.coordinates().split(":")[0];
+        return AnswerParser.mentions(answer, d.artifactId())
+                || groupId.endsWith("." + d.artifactId()) && answer.contains(groupId);
     }
 
     /**

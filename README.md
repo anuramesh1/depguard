@@ -5,10 +5,11 @@ Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and wha
 
 Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
-> **Status: phases 1–5 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
+> **Status: phases 1–6 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
 > knowledge base of every OSV Maven advisory plus official migration guides, quality evals (golden sets graded by
-> code checks and an LLM judge), and LLM tracing to Langfuse (every model call, tool call and retrieval, with cost).
-> 71 tests (3 of them need Docker), plus 2 eval suites run with `-Pevals`.
+> code checks and an LLM judge), LLM tracing to Langfuse, and measured cost/latency work: a triage now costs ~$0.005 and
+> takes ~2.6 s (was $0.012 and 4.9 s), repeats come from an answer cache in ~10 ms. 80 tests (7 need Docker), plus 2 eval
+> suites run with `-Pevals`.
 > Deploys to AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle) with `scripts/deploy.sh`;
 > removed with `scripts/teardown.sh`.
 
@@ -22,10 +23,11 @@ Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**.
 2. **Inside Lambda:** `StreamLambdaHandler` turns the API Gateway event into a normal servlet request, so the same Spring controller runs
    on Lambda and locally. `ScanService` parses the pom with `PomParser`, asks **OSV.dev** about every dependency through `OsvClient`
    (one batched call, then parallel fetches on virtual threads), and returns the report ranked by severity.
-   For `/api/triage`, `TriageAgent` instead hands the dependency list to **Claude on Amazon Bedrock** with four tools:
-   OSV (the same scan), **FIRST EPSS** (exploit probability), the **CISA KEV** catalog (known exploited), and a
-   **hybrid search** over the knowledge base in **Aurora Serverless v2** (reached through the RDS Data API, so the
-   Lambda needs no VPC).
+   For `/api/triage`, `TriageAgent` first checks the **answer cache**, then gathers the facts in code: OSV (the same
+   scan), **FIRST EPSS** (exploit probability) and the **CISA KEV** catalog (known exploited), ranked by DepGuard's rule.
+   Nothing vulnerable: it answers without a model. Otherwise **Claude on Amazon Bedrock** writes the explanation, with one
+   tool: a **hybrid search** over the knowledge base in **Aurora Serverless v2** (reached through the RDS Data API, so
+   the Lambda needs no VPC).
 3. **Knowledge base:** `scripts/ingest.sh` downloads every OSV Maven advisory and the migration guides, embeds them
    with **Titan Text Embeddings v2** and stores them in Postgres with pgvector. Re-runs embed only what changed.
 4. **Deploy:** `scripts/deploy.sh` runs the tests, builds `target/depguard-lambda.zip` and applies the Terraform in `infra/serverless/`.
@@ -70,34 +72,45 @@ pom.xml ──► PomParser ──► OsvClient.findVulnerabilityIds ──► O
 | Honest reports: unresolvable versions are listed as `skipped`, not ignored | `ParsedPom.skipped` |
 | Upstream failures return 503 with a safe message; details only in logs | `ApiExceptionHandler` |
 
-### AI triage agent (phase 2): `POST /api/triage`
+### AI triage (phases 2 and 6): `POST /api/triage`
 
-A Spring AI agent decides **what to upgrade first and why**, using live data through tools:
+DepGuard explains **what to upgrade first and why**. Since phase 6 it is a *workflow + agent*: code does everything
+that is the same on every request, and the model does what only a model can (explain, and decide when the migration
+guides are needed):
 
 ```
-pom.xml ─► PomParser ─► Claude on Bedrock ─┬─► findVulnerabilities   (OSV, the phase 1 scan, compact results)
-           (plain Java)   (Spring AI        ├─► getExploitProbability (FIRST EPSS)    ┐ called together
-                          ChatClient)       ├─► checkKnownExploited   (CISA KEV)      ┘
-                                            └─► searchAdvisories      (hybrid RAG, phase 3: migration guides + advisory text)
-                               │
-                               ▼
-                         Markdown answer ─► CveCitationGuard ─► TriageResult (answer, unverified CVEs, tool trace, sources, tokens)
+pom.xml ─► PomParser ─► answer cache ── hit ──────────────────────────────────────────► reused answer (~10 ms, $0)
+                            │ miss
+                            ▼
+                     TriageFactsService (code): OSV + EPSS + CISA KEV, ranked; release trains aligned
+                            │
+              nothing vulnerable ──────────────────────────────────────────────────────► "Nothing to upgrade" ($0)
+                            │
+                            ▼
+                     Claude on Bedrock (Spring AI) ── searchAdvisories, only if a major upgrade needs guides
+                            │
+                            ▼
+              Markdown answer ─► CveCitationGuard ─► TriageResult (answer, unverified CVEs, sources, tokens, traceId)
 ```
+
+Until phase 6 the model fetched the OSV, EPSS and KEV data itself with three tool calls; see
+[Cost and performance](#cost-and-performance-phase-6-measured-before-and-after) for why that changed.
 
 | Concept | Where |
 |---|---|
-| Tool calling with `@Tool` methods; Spring AI runs the call → result → call loop | [agent/tools/](src/main/java/dev/depguard/agent/tools/), [agent/TriageAgent.java](src/main/java/dev/depguard/agent/TriageAgent.java) |
+| Facts gathered and ranked in code (KEV, then EPSS, then severity; test scope last) | [agent/TriageFactsService.java](src/main/java/dev/depguard/agent/TriageFactsService.java), [agent/TriageFacts.java](src/main/java/dev/depguard/agent/TriageFacts.java) |
+| Tool calling with `@Tool`; Spring AI runs the call → result → call loop (one tool, offered only when useful) | [agent/tools/KnowledgeTools.java](src/main/java/dev/depguard/agent/tools/KnowledgeTools.java), [agent/TriageAgent.java](src/main/java/dev/depguard/agent/TriageAgent.java) |
 | Prompt templates kept out of code: role, steps, rules, output format | [prompts/triage-system.st](src/main/resources/prompts/triage-system.st), [prompts/triage-user.st](src/main/resources/prompts/triage-user.st) |
 | Per-request state passed to shared tools through `ToolContext` | [agent/TriageSession.java](src/main/java/dev/depguard/agent/TriageSession.java) |
-| Guardrail: every CVE in the answer must come from a tool result, checked in code | [agent/CveCitationGuard.java](src/main/java/dev/depguard/agent/CveCitationGuard.java) |
+| Guardrail: every CVE in the answer must come from the facts or a search result, checked in code | [agent/CveCitationGuard.java](src/main/java/dev/depguard/agent/CveCitationGuard.java) |
 | Guardrail: advisory text is treated as data; at most 8 tool calls per request | system prompt, `TriageSession.MAX_TOOL_CALLS` |
-| Token-aware tool results: top 5 advisories per dependency, summaries truncated | [agent/tools/VulnerabilityTools.java](src/main/java/dev/depguard/agent/tools/VulnerabilityTools.java) |
-| Feeds degrade gracefully: an outage becomes a message to the model, not a failed request | [agent/tools/ExploitTools.java](src/main/java/dev/depguard/agent/tools/ExploitTools.java) |
+| Token-aware facts: top 5 advisories per dependency, summaries truncated, EPSS rounded | `TriageFactsService` |
+| Feeds degrade gracefully: an outage becomes a note to the model, not a failed request | `TriageFactsService` |
 | Caching a 1.5 MB feed in memory with a TTL | [exploit/KevClient.java](src/main/java/dev/depguard/exploit/KevClient.java) |
 | Cost control: API key on the paid endpoint, `max-tokens` cap, low temperature | [api/ApiKeyFilter.java](src/main/java/dev/depguard/api/ApiKeyFilter.java), `application.yml` |
 | Tested without a model: a fake `ChatModel` checks prompts and the guardrail | [TriageAgentTest](src/test/java/dev/depguard/agent/TriageAgentTest.java) |
 
-Sample answer for `samples/vulnerable-pom.xml` (live run: 3 tool calls, ~12 s, ~9.6k input + 1.2k output tokens, ~$0.015):
+Sample answer for `samples/vulnerable-pom.xml` (phase 2 design, live run: 3 tool calls, ~12 s, ~9.6k input + 1.2k output tokens, ~$0.015):
 
 ```markdown
 ## Upgrade first
@@ -270,15 +283,14 @@ sent to **[Langfuse](https://langfuse.com)** (Cloud, free Hobby plan) as one tra
 
 ```
 depguard.triage                      agent      input: question + dependencies · output: the answer
-│                                               metadata: tool_calls, cited_cves, unverified_cves, sources
+│                                               metadata: route (cache / no-model / model), cited and unverified CVEs
 │                                               level WARNING when the citation guardrail fires
-├── spring_ai chat_client
-│   ├── chat us.anthropic.claude-haiku…  generation  prompt · completion · tokens · cost      (×3-5 rounds)
-│   ├── tool_call findVulnerabilities    tool        arguments · result
-│   ├── tool_call getExploitProbability  tool
-│   ├── tool_call checkKnownExploited    tool
-│   └── tool_call searchAdvisories       tool
-│       └── depguard.retrieval           retriever   query · hits with vector rank, keyword rank, RRF score
+├── depguard.answer_cache            span       hit · match (exact / similar) · similarity
+├── depguard.facts                   span       OSV + EPSS + KEV, ranked (output: the facts JSON)
+└── spring_ai chat_client
+    ├── chat us.anthropic.claude-haiku…  generation  prompt · completion · model · tokens · cost      (1-2 calls)
+    └── tool_call searchAdvisories       tool        arguments · result
+        └── depguard.retrieval           retriever   query · hits with vector rank, keyword rank, RRF score
 ```
 
 **Turning it on:** create a Langfuse project, then put `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and
@@ -326,12 +338,60 @@ The session is set explicitly (`AiTracing.inSession`) on DepGuard's root span; O
 but Spring Boot's OpenTelemetry bridge doesn't support local baggage fields. That's the run history the scorecards lacked: filter traces by a low score and open the exact prompts and tool
 results that produced the answer.
 
+## Cost and performance (phase 6): measured before and after
+
+Every change had to show its effect in the full triage eval (16 cases × 2 runs, Langfuse costs) or be dropped.
+
+| | Baseline (agent, 3 data tool calls) | **After phase 6** |
+|---|---|---|
+| Agent cost per triage | $0.0116 | **$0.0047 (−59%)** |
+| Latency p50 / p95 | 4.9 s / 10.8 s | **2.6 s / 7.3 s (−47% / −32%)** |
+| Model input / output tokens | 8,522 / 611 | 3,150 / 311 |
+| Model calls per triage | ~4 | ~1.5 (0 for clean poms and cache hits) |
+| Quality: all code checks; judge factual / prioritization / notes / clarity | 100% (Spring versions aligned: 0%); 4.69 / 4.88 / 4.88 / 4.94 | **100% (aligned: 100%); 4.94 / 5.00 / 5.00 / 5.00** |
+| Repeated request (answer cache) | full price | **~10 ms, $0** |
+
+**What changed, and what each one taught:**
+1. **Workflow before agent (A).** The model always asked for the same data in the same order (OSV, then EPSS + KEV),
+   paying a round trip each time that re-sent the whole conversation. Code now gathers the facts and ranks them; the
+   model only explains. First attempt: cheaper but *worse* (a safety gate failed, top pick 93%, expected content 78%).
+   Reading the answers showed the fixes were more of the same idea: give each dependency an explicit `rank` (the model
+   re-sorted by severity), offer the guide search only when a major upgrade exists (otherwise it wrote Jackson 3 notes
+   nobody needed), let code write the "Not checked" line, round EPSS so model and judge quote the same number, and
+   align release trains (spring-webmvc 7 with spring-beans 5 won't run) in code instead of asking the model.
+2. **Skip the model when nothing is vulnerable (B).** A clean pom gets a deterministic answer: $0, ~1 s. The eval also
+   caught that the "clean" golden pom wasn't clean any more (Guava gained an advisory): live data drifts.
+3. **Prompt caching (C): measured, then removed.** It works on Bedrock (a 7k-token prefix was read back from cache), but
+   Claude Haiku 4.5 caches only prompts of 4,096+ tokens. After (A) the first model call is ~2,200 tokens and the second
+   is the last, so nothing is ever read back: $0.00505 vs $0.00506 per triage. Caching pays when a long prefix is re-sent,
+   and (A) removed exactly those re-sends. Kept: cost accounting that includes cached tokens (Bedrock reports them
+   separately from `inputTokens`, so a cached call would otherwise look free).
+4. **Answer cache (D).** Same dependency set (plus model and prompt version) and the same question, within 6 hours →
+   the stored answer, from Postgres. Differently-worded questions reuse it only above a 0.55 embedding similarity:
+   measured with Titan, paraphrases scored 0.14-0.59 and *different* questions up to 0.32, so the threshold catches about
+   half the paraphrases and none of the different questions. A wrong cached answer is worse than a miss. Any database
+   problem counts as a miss, never an error. Off in the evals, which measure the agent.
+
+| Concept | Where |
+|---|---|
+| Answer cache: exact + similar tiers, TTL, versioned key, fail-open | [cache/AnswerCache.java](src/main/java/dev/depguard/cache/AnswerCache.java), [AnswerCacheTest](src/test/java/dev/depguard/cache/AnswerCacheTest.java) (pgvector) |
+| SQL over JDBC locally and the RDS Data API on AWS | [cache/SqlRunner.java](src/main/java/dev/depguard/cache/SqlRunner.java) |
+| Cost including cached tokens | [observability/ModelPricing.java](src/main/java/dev/depguard/observability/ModelPricing.java) |
+| Before/after scorecards | `target/evals/` after `./mvnw test -Pevals`; every run is also a Langfuse session |
+
+5. **A production bug the evals surfaced.** Gathering facts up front made four parallel triages fetch ~200 OSV advisories
+   at the same moment, and OSV refused with "too many concurrent streams" (the JDK client multiplexes requests over one
+   HTTP/2 connection). `OsvClient` now allows at most 16 requests in flight, app-wide; a test fires 100 at once and checks
+   the peak. One big pom or a few simultaneous users could have hit this in production.
+
+Model routing (a cheaper model for easy poms) is left for phase 7, where the eval suites compare models properly.
+
 ## Local demo (free)
 
 Prerequisite: **JDK 21+** (`brew install --cask temurin@21`). Maven comes with the project (`./mvnw`).
 
 ```bash
-./mvnw test                     # 71 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
+./mvnw test                     # 80 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
 ./mvnw spring-boot:run          # starts on http://localhost:8080
 
 curl -s -X POST localhost:8080/api/scans \
@@ -429,7 +489,7 @@ IAM policies for two Bedrock models and the Data API, a generated API key, and A
 | First full ingest | ~$0.05 of Titan embeddings (~7,350 chunks), plus a few minutes of Aurora time |
 | One scan (about 2.5 s at 1 GB on ARM64, plus one API request) | ~$0.00003 |
 | 1,000 demo scans | ~$0.03, and usually inside Lambda's monthly free allowance |
-| One AI triage (4–5 model calls, ~18k input + ~1.4k output tokens on Haiku 4.5, plus 1–2 query embeddings) | ~$0.025 |
+| One AI triage (1–2 model calls, ~3.5k input + ~0.3k output tokens on Haiku 4.5; up to ~10k for big poms) | ~$0.005 (big poms up to ~$0.015); repeats from the answer cache: $0 |
 | Worst case: someone hammers `/api/scans` at the 5 req/s throttle all day | ~$15/day. This is why the throttle exists; tear down if you see unexpected traffic. |
 | Someone hammering `/api/triage` | Blocked: it needs the API key, because unthrottled LLM calls could cost far more |
 
@@ -461,8 +521,8 @@ Prices are approximate us-east-1 list prices; the UAE (me-central-1) and some ot
 - **Fargate** when traffic is steady (it gets cheaper than Lambda at sustained load), when requests run longer than
   30 s (API Gateway's limit; relevant for long agent runs), or when you need long-lived connections such as streaming chat.
 
-LLM usage is extra and usage-based on either option: about $0.025 per triage on Claude Haiku 4.5
-(measured: ~18.5k tokens in and ~1.4k out across 5 model calls), so 1,000 triages cost roughly $25. Check current Bedrock prices.
+LLM usage is extra and usage-based on either option: about $0.005 per triage on Claude Haiku 4.5 (measured over the eval set; bigger poms up to ~$0.015)
+(measured: ~3.5k tokens in and ~0.3k out across 1-2 model calls), so 1,000 triages cost roughly $5, less with cache hits. Check current Bedrock prices.
 
 ### The database on serverless (how phase 3 does it)
 
@@ -518,7 +578,7 @@ The phase 6 semantic cache answers "have we answered a question like this before
 | **3** ✅ | Hybrid RAG over advisories and migration guides (pgvector + full-text + RRF), Aurora via the Data API | RAG, data |
 | **4** ✅ | Golden-set evals: oracle from live OSV/EPSS/KEV, code checks + Nova Pro judge, retrieval metrics, CI workflow | Evals design |
 | **5** ✅ | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability |
-| 6 | Semantic cache, prompt caching, model routing | Cost and performance optimization |
+| **6** ✅ | Facts in code (workflow + agent), no-model route, answer cache; prompt caching measured and dropped | Cost and performance optimization |
 | 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection |
 | 8 | Spring Security (JWT, roles), human-approved upgrade PRs, production hardening of the AWS stack | Security, guardrails, cloud |
 

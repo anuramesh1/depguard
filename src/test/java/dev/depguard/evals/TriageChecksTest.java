@@ -31,7 +31,7 @@ class TriageChecksTest {
             List.of("CVE-2021-44228"), List.of("PWNED"), null, null);
 
     private static TriageResult result(String answer, List<String> unverified) {
-        return new TriageResult(answer, List.of(), unverified, List.of(), List.of(), List.of(), "fake", 0, 0, 0, null);
+        return new TriageResult(answer, List.of(), unverified, List.of(), List.of(), List.of(), "fake", 0, 0, 0L, 0L, 0, null, null);
     }
 
     private static Check check(List<Check> checks, String name) {
@@ -98,6 +98,15 @@ class TriageChecksTest {
         assertThat(check(TriageChecks.run(noRegex, clean,
                 result("## Upgrade first\n1. guava 33.4.0 → 34.0\n", List.of())),
                 "nothing-to-upgrade").passed()).isFalse();
+    }
+
+    @Test
+    void aGroupIdEndingInTheArtifactNameCountsAsAMention() {
+        DependencyFacts xstream = new DependencyFacts("xstream", "com.thoughtworks.xstream:xstream:1.4.17", "compile",
+                "1.4.21", 9, false, false, 0.05, List.of());
+
+        assertThat(TriageChecks.mentionsDependency("2. **com.thoughtworks.xstream** 1.4.17 → 1.4.21", xstream)).isTrue();
+        assertThat(TriageChecks.mentionsDependency("1. activemq-client 5.18.2 → 5.19.8", xstream)).isFalse();
     }
 
     @Test

@@ -59,7 +59,8 @@ class ChatContentObservationFilter implements ObservationFilter {
         }
         Usage usage = response.getMetadata() == null ? null : response.getMetadata().getUsage();
         if (usage != null && usage.getPromptTokens() != null && usage.getCompletionTokens() != null) {
-            pricing.costOf(modelOf(chat), usage.getPromptTokens(), usage.getCompletionTokens())
+            pricing.costOf(modelOf(chat), usage.getPromptTokens(), usage.getCompletionTokens(),
+                            orZero(usage.getCacheReadInputTokens()), orZero(usage.getCacheWriteInputTokens()))
                     .ifPresent(cost -> context.addHighCardinalityKeyValue(KeyValue.of(
                             "gen_ai.usage.cost", String.format(Locale.ROOT, "%.6f", cost))));
         }
@@ -81,6 +82,10 @@ class ChatContentObservationFilter implements ObservationFilter {
             }
         }
         return tool;
+    }
+
+    private static long orZero(Long value) {
+        return value == null ? 0 : value;
     }
 
     private String modelOf(ChatModelObservationContext chat) {

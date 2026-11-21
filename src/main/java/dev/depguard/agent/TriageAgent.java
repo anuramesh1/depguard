@@ -1,14 +1,14 @@
 package dev.depguard.agent;
 
-import dev.depguard.agent.tools.ExploitTools;
 import dev.depguard.agent.tools.KnowledgeTools;
-import dev.depguard.agent.tools.VulnerabilityTools;
+import dev.depguard.cache.AnswerCache;
 import dev.depguard.dependency.Dependency;
 import dev.depguard.dependency.ParsedPom;
 import dev.depguard.dependency.PomParser;
 import dev.depguard.observability.AiTracing;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.metadata.Usage;
@@ -16,19 +16,22 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The triage agent: given a pom.xml and a question, decides which dependencies to upgrade first.
+ * The triage: given a pom.xml and a question, explains which dependencies to upgrade first and why.
  *
- * <p>How one request runs:
+ * <p>How one request runs (a "workflow + agent" design since phase 6):
  * <ol>
  *   <li>Parse the pom in plain Java (no LLM needed to read XML).</li>
- *   <li>Send the dependency list and question to the model, with four tools available. Spring AI runs
- *       the tool-calling loop: the model asks for a tool, Spring AI calls our Java method and sends the
- *       result back, until the model writes its answer. Typically: findVulnerabilities, then
- *       getExploitProbability + checkKnownExploited together, searchAdvisories for major upgrades (RAG),
- *       then the answer.</li>
- *   <li>Check the answer's CVE IDs against what the tools returned (guardrail).</li>
+ *   <li>Same dependencies asked about recently? Reuse that answer ({@link AnswerCache}): free.</li>
+ *   <li>Gather the facts in code ({@link TriageFactsService}): OSV findings, EPSS and CISA KEV per CVE, ranked
+ *       most urgent first. These lookups are the same every time, so a model deciding to make them only added
+ *       round trips.</li>
+ *   <li>Nothing vulnerable? Answer without calling the model at all: free and instant.</li>
+ *   <li>Otherwise send the facts to the model with one tool, searchAdvisories (RAG over migration guides). The
+ *       model decides whether a major upgrade needs the guides, then writes the explanation.</li>
+ *   <li>Check the answer's CVE IDs against the facts and search results (guardrail).</li>
  * </ol>
  *
  * <p>The whole triage is traced as one "agent" span (see {@link AiTracing}); its trace ID is in the result.
@@ -37,36 +40,52 @@ import org.springframework.stereotype.Service;
 public class TriageAgent {
 
     static final String DEFAULT_QUESTION = "Which dependencies should I upgrade first, and why?";
+    /** Reported as the model when the answer needed no model call. */
+    static final String NO_MODEL = "none (no vulnerable dependencies)";
 
     private final ChatClient chatClient;
     private final PomParser pomParser;
-    private final VulnerabilityTools vulnerabilityTools;
-    private final ExploitTools exploitTools;
+    private final TriageFactsService factsService;
     private final KnowledgeTools knowledgeTools;
     private final AiTracing tracing;
+    private final JsonMapper jsonMapper;
     private final Resource systemPrompt;
     private final Resource userPrompt;
     private final String model;
+    private final AnswerCache answerCache;
+    /** Changes when the model or prompts change, so cached answers from an older setup are never reused. */
+    private final String cacheVersion;
 
     public TriageAgent(
             ChatClient.Builder chatClientBuilder,
             PomParser pomParser,
-            VulnerabilityTools vulnerabilityTools,
-            ExploitTools exploitTools,
+            TriageFactsService factsService,
             KnowledgeTools knowledgeTools,
             AiTracing tracing,
+            JsonMapper jsonMapper,
             @Value("classpath:prompts/triage-system.st") Resource systemPrompt,
             @Value("classpath:prompts/triage-user.st") Resource userPrompt,
-            @Value("${spring.ai.bedrock.converse.chat.options.model:unknown}") String model) {
+            @Value("${spring.ai.bedrock.converse.chat.options.model:unknown}") String model,
+            AnswerCache answerCache) {
         this.chatClient = chatClientBuilder.build();
         this.pomParser = pomParser;
-        this.vulnerabilityTools = vulnerabilityTools;
-        this.exploitTools = exploitTools;
+        this.factsService = factsService;
         this.knowledgeTools = knowledgeTools;
         this.tracing = tracing;
+        this.jsonMapper = jsonMapper;
         this.systemPrompt = systemPrompt;
         this.userPrompt = userPrompt;
         this.model = model;
+        this.answerCache = answerCache;
+        this.cacheVersion = AnswerCache.sha256(model + "\n" + read(systemPrompt) + "\n" + read(userPrompt));
+    }
+
+    private static String read(Resource resource) {
+        try {
+            return resource.getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Cannot read prompt " + resource, e);
+        }
     }
 
     public TriageResult triage(String pomXml, String question) {
@@ -75,37 +94,72 @@ public class TriageAgent {
         String userQuestion = question == null || question.isBlank() ? DEFAULT_QUESTION : question.trim();
         String dependencies = formatDependencies(pom.dependencies());
 
-        // One "agent" span for the whole triage: the model, tool and HTTP spans below become its children.
+        // One "agent" span for the whole triage: the facts, model, tool and retrieval spans become its children.
         return tracing.observe("depguard.triage", "agent", userQuestion + "\n\n" + dependencies, step -> {
             if (pom.dependencies().isEmpty()) {
-                // Nothing to check: answer without spending tokens.
-                String answer = "No dependencies with a known version were found in this pom.xml.";
-                step.output(answer);
-                return new TriageResult(answer, List.of(), List.of(), List.of(), List.of(), pom.skipped(), model,
-                        0, 0, elapsedMs(start), step.traceId());
+                return answerWithoutModel(step, "No dependencies with a known version were found in this pom.xml.",
+                        pom, start);
+            }
+
+            // Asked recently about the same dependencies? Reuse that answer: no lookups, no model, no cost.
+            String cacheKey = AnswerCache.key(cacheVersion, cacheLines(pom));
+            Optional<AnswerCache.Hit> hit = tracing.observe("depguard.answer_cache", "span", userQuestion, cacheStep -> {
+                Optional<AnswerCache.Hit> found = answerCache.lookup(cacheKey, userQuestion);
+                cacheStep.metadata("hit", found.isPresent());
+                found.ifPresent(h -> {
+                    cacheStep.metadata("match", h.match());
+                    cacheStep.metadata("similarity", String.format(java.util.Locale.ROOT, "%.3f", h.similarity()));
+                });
+                return found;
+            });
+            if (hit.isPresent()) {
+                return fromCache(step, hit.get(), start);
+            }
+
+            TriageFacts facts = tracing.observe("depguard.facts", "span", dependencies, factsStep -> {
+                TriageFacts gathered = factsService.gather(pom.dependencies());
+                factsStep.output(toJson(gathered));
+                factsStep.metadata("vulnerable", gathered.vulnerable().size());
+                return gathered;
+            });
+            if (facts.vulnerable().isEmpty()) {
+                return answerWithoutModel(step, nothingToUpgrade(facts, pom), pom, start);
             }
 
             TriageSession session = new TriageSession();
-            ChatResponse response = chatClient.prompt()
+            session.recordCves(facts.cveIds());
+            // The guide search is offered only when a major upgrade needs migration notes. Without it, the model
+            // added notes about upgrades nobody needs (e.g. "Jackson 3" for a 2.x fix): found by the evals.
+            boolean offerGuides = facts.anyMajorUpgrade();
+            ChatClient.ChatClientRequestSpec request = chatClient.prompt()
                     .system(systemPrompt)
                     .user(user -> user.text(userPrompt)
                             .param("dependencies", dependencies)
-                            .param("skipped", pom.skipped().isEmpty() ? "none" : String.join("\n", pom.skipped()))
+                            .param("facts", toJson(facts))
+                            .param("upgradeNotes", offerGuides
+                                    ? "Some upgrades are major-version upgrades: search the guides for them."
+                                    : "No upgrade is a major-version upgrade: omit the Upgrade notes section.")
                             .param("question", userQuestion))
-                    .tools(vulnerabilityTools, exploitTools, knowledgeTools)
-                    .toolContext(Map.of(TriageSession.KEY, session))
-                    .call()
-                    .chatResponse();
+                    .toolContext(Map.of(TriageSession.KEY, session));
+            if (offerGuides) {
+                request = request.tools(knowledgeTools);
+            }
+            // No prompt caching, by measurement (phase 6): Haiku 4.5 caches only prompts of 4,096+ tokens. The first
+            // call here is ~2,200 tokens, and the second (~5,200) is the last, so nothing would ever be read back.
+            // Caching pays when a long prefix is re-sent; the workflow removed exactly those re-sends.
+            ChatResponse response = request.call().chatResponse();
 
-            String answer = response == null || response.getResult() == null
+            String answer = withUncheckedLine(response == null || response.getResult() == null
                     ? ""
-                    : response.getResult().getOutput().getText();
+                    : response.getResult().getOutput().getText(), pom);
             CveCitationGuard.Result citations = CveCitationGuard.check(answer, session.knownCves());
             Usage usage = response == null ? null : response.getMetadata().getUsage();
 
             // What Langfuse shows for this trace: the answer, and the facts you'd filter on.
             step.output(answer);
+            step.metadata("route", "model");
             step.metadata("dependencies", pom.dependencies().size());
+            step.metadata("vulnerable", facts.vulnerable().size());
             step.metadata("tool_calls", session.toolCalls().size());
             step.metadata("cited_cves", citations.cited().size());
             step.metadata("unverified_cves", citations.unverified().size());
@@ -114,7 +168,7 @@ public class TriageAgent {
                 step.warning("Guardrail: the answer cites CVEs no tool returned: " + citations.unverified());
             }
 
-            return new TriageResult(
+            TriageResult result = new TriageResult(
                     answer,
                     citations.cited(),
                     citations.unverified(),
@@ -124,9 +178,64 @@ public class TriageAgent {
                     model,
                     usage == null ? null : usage.getPromptTokens(),
                     usage == null ? null : usage.getCompletionTokens(),
+                    usage == null ? null : usage.getCacheReadInputTokens(),
+                    usage == null ? null : usage.getCacheWriteInputTokens(),
                     elapsedMs(start),
-                    step.traceId());
+                    step.traceId(),
+                    null);
+            if (citations.unverified().isEmpty()) {
+                answerCache.store(cacheKey, userQuestion, result); // never reuse an answer the guardrail flagged
+            }
+            return result;
         });
+    }
+
+    /** A reused answer: this request spent no tokens, so its token counts are 0; cachedAt says when it was made. */
+    private TriageResult fromCache(AiTracing.Step step, AnswerCache.Hit hit, long start) {
+        TriageResult cached = hit.result();
+        step.output(cached.answer());
+        step.metadata("route", "cache-" + hit.match());
+        return new TriageResult(cached.answer(), cached.citedCves(), cached.unverifiedCves(), cached.toolCalls(),
+                cached.sources(), cached.skipped(), cached.model(), 0, 0, 0L, 0L, elapsedMs(start), step.traceId(),
+                hit.createdAt());
+    }
+
+    /** What makes two triages "the same dependencies": every dependency with its scope, plus unchecked ones. */
+    private static List<String> cacheLines(ParsedPom pom) {
+        List<String> lines = new java.util.ArrayList<>(pom.dependencies().stream()
+                .map(d -> d.groupId() + ":" + d.artifactId() + ":" + d.version() + ":" + d.scope()).toList());
+        pom.skipped().forEach(s -> lines.add("skipped " + s));
+        return lines;
+    }
+
+    /**
+     * Lists dependencies that couldn't be checked (no version in the pom). Written by code: the model left this line
+     * out in 2 of 2 eval runs, and code knows the list exactly.
+     */
+    static String withUncheckedLine(String answer, ParsedPom pom) {
+        if (pom.skipped().isEmpty()) {
+            return answer;
+        }
+        return answer.stripTrailing() + "\n\nNot checked (version unknown): " + pom.skipped().stream()
+                .map(s -> s.replaceFirst(" \\(.*", "")).collect(Collectors.joining(", ")) + "\n";
+    }
+
+    /** Route for answers code can write by itself: no tokens spent, nothing to verify. */
+    private TriageResult answerWithoutModel(AiTracing.Step step, String answer, ParsedPom pom, long start) {
+        step.output(answer);
+        step.metadata("route", "no-model");
+        return new TriageResult(answer, List.of(), List.of(), List.of(), List.of(), pom.skipped(), NO_MODEL,
+                0, 0, 0L, 0L, elapsedMs(start), step.traceId(), null);
+    }
+
+    /** Same sections as a model answer, so clients and evals read both the same way. */
+    static String nothingToUpgrade(TriageFacts facts, ParsedPom pom) {
+        return withUncheckedLine("## Upgrade first\nNothing to upgrade: none of the " + facts.dependenciesChecked()
+                + " checked dependencies has a known vulnerability in OSV.\n\n## Can wait\nNothing else.\n", pom);
+    }
+
+    private String toJson(TriageFacts facts) {
+        return jsonMapper.writeValueAsString(facts);
     }
 
     /** One line per dependency: "groupId:artifactId:version (scope)". */

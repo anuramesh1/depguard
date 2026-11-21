@@ -14,7 +14,20 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties("depguard.pricing")
 public record ModelPricing(List<Price> models) {
 
-    public record Price(String model, double inputPerMillion, double outputPerMillion) {
+    /**
+     * @param cacheReadPerMillion  price of input tokens read from the prompt cache; null = the usual 0.1x of input
+     * @param cacheWritePerMillion price of input tokens written to the cache (5-minute TTL); null = 1.25x of input
+     */
+    public record Price(String model, double inputPerMillion, double outputPerMillion, Double cacheReadPerMillion,
+                        Double cacheWritePerMillion) {
+
+        double cacheRead() {
+            return cacheReadPerMillion != null ? cacheReadPerMillion : inputPerMillion * 0.1;
+        }
+
+        double cacheWrite() {
+            return cacheWritePerMillion != null ? cacheWritePerMillion : inputPerMillion * 1.25;
+        }
     }
 
     public ModelPricing {
@@ -23,9 +36,19 @@ public record ModelPricing(List<Price> models) {
 
     /** Cost in USD, or empty when the model isn't in the table (better no number than a wrong one). */
     public Optional<Double> costOf(String model, long inputTokens, long outputTokens) {
+        return costOf(model, inputTokens, outputTokens, 0, 0);
+    }
+
+    /**
+     * Cost including prompt caching. Bedrock reports cached tokens separately from {@code inputTokens} (a cached
+     * 7,277-token prompt shows inputTokens=10), so ignoring them would make cached calls look almost free.
+     */
+    public Optional<Double> costOf(String model, long inputTokens, long outputTokens, long cacheReadTokens,
+                                   long cacheWriteTokens) {
         return models.stream()
                 .filter(p -> p.model().equals(model))
                 .findFirst()
-                .map(p -> (inputTokens * p.inputPerMillion() + outputTokens * p.outputPerMillion()) / 1_000_000);
+                .map(p -> (inputTokens * p.inputPerMillion() + outputTokens * p.outputPerMillion()
+                        + cacheReadTokens * p.cacheRead() + cacheWriteTokens * p.cacheWrite()) / 1_000_000);
     }
 }

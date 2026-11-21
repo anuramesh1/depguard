@@ -1,7 +1,9 @@
 Dependencies declared in my pom.xml (groupId:artifactId:version, scope):
 {dependencies}
 
-Not checked because the version is unknown:
-{skipped}
+FACTS (vulnerable dependencies; "rank" 1 is the most urgent):
+{facts}
+
+{upgradeNotes}
 
 My question: {question}

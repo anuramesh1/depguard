@@ -4,12 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.depguard.agent.TriageAgent;
 import dev.depguard.agent.TriageResult;
-import dev.depguard.agent.tools.VulnerabilityTools;
+import dev.depguard.agent.TriageFactsService;
 import dev.depguard.dependency.PomParser;
 import dev.depguard.evals.GoldenSet.TriageCase;
 import dev.depguard.evals.TriageOracle.Expected;
-import dev.depguard.exploit.EpssClient;
-import dev.depguard.exploit.KevClient;
 import dev.depguard.observability.AiTracing;
 import dev.depguard.observability.LangfuseProperties;
 import java.nio.file.Files;
@@ -62,7 +60,8 @@ import tools.jackson.databind.json.JsonMapper;
  * measurable problem, and a single run can't show it.
  */
 @Tag("eval")
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+// The answer cache is off: the eval measures the agent, and repeats would otherwise just hit the cache.
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = "depguard.answer-cache.enabled=false")
 class TriageEval {
 
     private static final int PARALLEL = 4; // concurrent triages: fast, and well within Bedrock's rate limits
@@ -72,9 +71,7 @@ class TriageEval {
 
     @Autowired TriageAgent agent;
     @Autowired PomParser pomParser;
-    @Autowired VulnerabilityTools vulnerabilityTools;
-    @Autowired EpssClient epssClient;
-    @Autowired KevClient kevClient;
+    @Autowired TriageFactsService factsService;
     @Autowired ChatModel chatModel;
     @Autowired LangfuseProperties langfuse;
 
@@ -94,7 +91,7 @@ class TriageEval {
         assertThat(cases).as("golden cases selected").isNotEmpty();
 
         // The oracle runs once per case: its data (OSV, EPSS, KEV) is free and doesn't change between repeats.
-        TriageOracle oracle = new TriageOracle(pomParser, vulnerabilityTools, epssClient, kevClient);
+        TriageOracle oracle = new TriageOracle(pomParser, factsService);
         Map<String, Expected> expected = new ConcurrentHashMap<>();
         for (TriageCase c : cases) {
             expected.put(c.id(), oracle.expectedFor(c.pomXml()));
@@ -180,7 +177,9 @@ class TriageEval {
                 judgement == null ? null : judgement.verdict(),
                 judgement == null ? 0 : judgement.inputTokens(),
                 judgement == null ? 0 : judgement.outputTokens(),
-                result.answer(), result.unverifiedCves(), result.traceId());
+                result.answer(), result.unverifiedCves(), result.traceId(),
+                result.cacheReadInputTokens() == null ? 0 : result.cacheReadInputTokens(),
+                result.cacheWriteInputTokens() == null ? 0 : result.cacheWriteInputTokens());
     }
 
     /** A saved run as a TriageResult, so the checks can't tell it from a live one. */
@@ -188,7 +187,8 @@ class TriageEval {
         return new TriageResult(saved.answer(), List.of(),
                 saved.unverifiedCves() == null ? List.of() : saved.unverifiedCves(),
                 Collections.nCopies(saved.toolCalls(), "(replayed)"), List.of(), List.of(), "replayed",
-                saved.inputTokens(), saved.outputTokens(), saved.durationMs(), saved.traceId());
+                saved.inputTokens(), saved.outputTokens(), saved.cacheReadTokens(), saved.cacheWriteTokens(),
+                saved.durationMs(), saved.traceId(), null);
     }
 
     private static List<TriageScorecard.Run> loadRuns(Path file) throws Exception {

@@ -27,7 +27,7 @@ import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 class ObservabilityTest {
 
     private static final String HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-    private static final ModelPricing PRICING = new ModelPricing(List.of(new ModelPricing.Price(HAIKU, 1.0, 5.0)));
+    private static final ModelPricing PRICING = new ModelPricing(List.of(new ModelPricing.Price(HAIKU, 1.0, 5.0, null, null)));
 
     @Test
     void propertiesBuildTheOtlpEndpointAndNeverPrintTheSecret() {
@@ -60,6 +60,13 @@ class ObservabilityTest {
         Map<String, String> attributes = attributesOf(new ChatContentObservationFilter(PRICING, false, HAIKU).map(chatContext()));
 
         assertThat(attributes).doesNotContainKeys("gen_ai.prompt", "gen_ai.completion").containsKey("gen_ai.usage.cost");
+    }
+
+    @Test
+    void cachedTokensAreCostedSeparately() {
+        // 10 uncached + 7,267 read from cache + 5 output tokens: the shape Bedrock really returns
+        assertThat(PRICING.costOf(HAIKU, 10, 5, 7_267, 0).orElseThrow()).isCloseTo(0.000762, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(PRICING.costOf(HAIKU, 10, 5, 0, 7_267).orElseThrow()).isCloseTo(0.009119, org.assertj.core.data.Offset.offset(1e-6));
     }
 
     @Test

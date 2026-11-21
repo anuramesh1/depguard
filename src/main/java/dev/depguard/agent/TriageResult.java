@@ -14,7 +14,10 @@ import java.util.List;
  * @param model          the Bedrock model that answered
  * @param inputTokens    tokens sent to the model, across all tool-calling rounds (drives cost)
  * @param outputTokens   tokens the model generated
+ * @param cacheReadInputTokens  input tokens read from the prompt cache (billed at ~0.1x; not in inputTokens)
+ * @param cacheWriteInputTokens input tokens written to the prompt cache (billed at ~1.25x; not in inputTokens)
  * @param traceId        the request's trace ID: find it in Langfuse (null when tracing isn't active)
+ * @param cachedAt       when the reused answer was made, if this came from the answer cache; null when fresh
  */
 public record TriageResult(
         String answer,
@@ -26,6 +29,9 @@ public record TriageResult(
         String model,
         Integer inputTokens,
         Integer outputTokens,
+        Long cacheReadInputTokens,
+        Long cacheWriteInputTokens,
         long durationMs,
-        String traceId) {
+        String traceId,
+        String cachedAt) {
 }
