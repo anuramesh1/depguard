@@ -19,7 +19,7 @@ This is a public repo: keep personal notes and context out of committed files. T
   (nothing listens on :8080). It is excluded in `application.yml`; the Lambda handler works without it.
 - **Spring AI 2.1.0** (not LangChain4j): Spring-native, and its Micrometer observability makes the Langfuse phase easier.
 - **Amazon Bedrock** for models (owner's choice): IAM role on Lambda, no API key to store; Converse API via `spring-ai-starter-model-bedrock-converse`.
-- Single Spring Boot app, no microservices. Packages: `dependency`, `osv`, `scan`, `exploit`, `agent`, `rag`, `api`, `lambda` (later `cache`, `security`, `evals`).
+- Single Spring Boot app, no microservices. Packages: `dependency`, `osv`, `scan`, `exploit`, `agent`, `rag`, `api`, `lambda`; evals live in test sources (`evals`). Later: `cache`, `security`.
 - Plain blocking code on virtual threads (`spring.threads.virtual.enabled=true`), no reactive stack.
 - Errors are RFC 9457 problem details. Upstream failures return 503 with a generic message; details go only to logs.
 - The pom parser rejects DOCTYPE (XXE protection). Dependencies with unknown versions are reported as `skipped`, never guessed.
@@ -50,14 +50,25 @@ This is a public repo: keep personal notes and context out of committed files. T
   (vectorRank/keywordRank/score), `scripts/ingest.sh`, Aurora in `infra/serverless/aurora.tf`.
   - Full local ingest: 7,352 chunks (7,143 advisories + 209 guide sections), ~4 min, 0 failures; re-run skips unchanged chunks.
   - Live triage: 5 tool calls (2 searches), 7 guide sources, ~11.6 s, ~18.5k in + 1.4k out tokens ≈ $0.025, all CVEs verified.
-  - Eval cases for phase 4: commons-text ranked below jackson-databind (intermittent; correct in the latest run), and
-    after reading the Jackson 3 guide the model claimed jackson-databind "requires" Jackson 3 (2.18.11 already fixes the CVEs).
   - Retrieval note: keyword half ORs words, so generic words ("new", "moving") add noise; specific queries work well.
-- **Tests:** 55 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
+- **Phase 4 done (2026-11-21):** evals in `src/test/java/dev/depguard/evals/` (tag `eval`, classes `*Eval`), run with
+  `./mvnw test -Pevals`; golden sets in `src/test/resources/evals/`. TriageOracle derives expectations from live data;
+  TriageChecks = gates (fail build) + tracked; TriageJudge = Amazon Nova Pro (`us.amazon.nova-pro-v1:0`; the account also
+  has Pixtral Large and Claude Opus 4.1, not Sonnet). Scorecards → `target/evals/`. Final: gates 100%, top-pick 100%,
+  judge factual 4.66 / notes 4.81, retrieval hybrid hit@5 0.87 (vector 0.70, keyword 0.57). ~$0.42 per triage eval run.
+  - Fixes from evals: CVE-ID tokenization (`HybridSearchSql.normalizeIds`; local table migrated in place), prompt rules
+    (don't rank by advisory count, align framework module versions, report unchecked deps inside the "Can wait" template).
+  - Open, tracked: "Java 17" often missing from spring-web notes; occasional irrelevant Jackson 3 notes; agent sometimes
+    quotes EPSS percentile as probability. Nova Pro over-flags rounding.
+  - Cost tiers: `-Devals.tier=smoke` (5 cases × 1, ~$0.08), `-Devals.replay=<scorecard.json>` re-grades saved answers
+    without calling the agent ($0 with `-Devals.judge=false`). Use replay when only graders change.
+  - CI: `.github/workflows/ci.yml` (unit tests on push; evals manual + needs repo variable AWS_EVAL_ROLE_ARN from
+    `infra/ci/` Terraform, not applied).
+- **Tests:** 63 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
 - **Bedrock access:** this account can use Claude **Haiku 4.5** (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) and Titan Text Embeddings v2.
   Haiku 5.5 and Sonnet 5.5 return AccessDenied ("not available for this account"). The model is configurable (`model_id` in Terraform).
 - **Deploy:** never applied. Lambda zip ~45 MB, uploaded through S3. The account has no default VPC in us-east-1 (hence aurora.tf's own VPC).
-- Public repo: https://github.com/anuramesh1/depguard. Phases 1–3 and the upgrade pushed (2026-11-20/21).
+- Public repo: https://github.com/anuramesh1/depguard. Phases 1–4 and the upgrade pushed (2026-11-20/21).
   The owner wants **no Claude co-author or attribution lines** in commits. Note: the old `CLAUDE.md` wording with job references is still in `b6cdc00`'s history.
 - Local dev: `.env` (gitignored) holds a random POSTGRES_PASSWORD; `docker compose up -d postgres`. Docker Desktop may start minimised to the menu bar.
 - Local JDK for this machine: `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home` (no JDK on the default PATH).
@@ -65,7 +76,8 @@ This is a public repo: keep personal notes and context out of committed files. T
 ## Next steps
 1. Optionally deploy (`scripts/deploy.sh`, then `scripts/ingest.sh aws`) and try `/api/triage` on Lambda with the key.
    Verify SnapStart + Bedrock credentials after restore, Aurora resume behaviour, and that a triage finishes inside API Gateway's 30 s.
-2. **Phase 4: evals** — golden set from OSV ground truth + LLM judge, in CI (should catch the commons-text ranking flaw).
+2. **Phase 5: Langfuse observability** (traces: tokens, cost, latency, failures per tool call). Before that, optionally
+   enable eval CI (`infra/ci/README.md`).
 
 ## Running in IntelliJ
 - Open the `depguard` folder; IntelliJ imports the Maven project from `pom.xml`.

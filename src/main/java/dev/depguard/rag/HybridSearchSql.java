@@ -21,6 +21,15 @@ public final class HybridSearchSql {
     /** RRF's smoothing constant; 60 is the value from the original paper and the common default. */
     public static final int RRF_K = 60;
 
+    /**
+     * Postgres' text parser splits "CVE-2022-42889" into "cve", "-2022" and "-42889", so a keyword search for one
+     * CVE matches every advisory mentioning "cve" or "2022". Rewriting CVE IDs to one token ("cve202242889"),
+     * identically in the index and in the query, makes exact-ID search work. (Found by the retrieval eval.)
+     */
+    static String normalizeIds(String sqlText) {
+        return "regexp_replace(" + sqlText + ", 'CVE-(\\d{4})-(\\d+)', 'cve\\1\\2', 'gi')";
+    }
+
     /** One statement per entry: the RDS Data API runs a single statement per call. */
     public static final List<String> SCHEMA = List.of(
             "CREATE EXTENSION IF NOT EXISTS vector",
@@ -35,9 +44,9 @@ public final class HybridSearchSql {
                 content_hash text NOT NULL,
                 embedding    vector(%d) NOT NULL,
                 -- Postgres keeps the full-text index column up to date itself
-                search_text  tsvector GENERATED ALWAYS AS (to_tsvector('english', title || ' ' || body)) STORED,
+                search_text  tsvector GENERATED ALWAYS AS (to_tsvector('english', %s)) STORED,
                 updated_at   timestamptz NOT NULL DEFAULT now()
-            )""".formatted(DIMENSIONS),
+            )""".formatted(DIMENSIONS, normalizeIds("title || ' ' || body")),
             // HNSW: approximate nearest-neighbour index for cosine distance (the <=> operator)
             "CREATE INDEX IF NOT EXISTS knowledge_chunk_embedding_idx ON knowledge_chunk USING hnsw (embedding vector_cosine_ops)",
             // GIN: inverted index for full-text search (the @@ operator)
@@ -81,7 +90,7 @@ public final class HybridSearchSql {
             keyword AS (
                 SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(search_text, query) DESC) AS rank
                 FROM knowledge_chunk,
-                     to_tsquery('english', replace(plainto_tsquery('english', :query)::text, ' & ', ' | ')) AS query
+                     to_tsquery('english', replace(plainto_tsquery('english', %2$s)::text, ' & ', ' | ')) AS query
                 WHERE search_text @@ query
                 ORDER BY ts_rank_cd(search_text, query) DESC
                 LIMIT :candidates
@@ -95,7 +104,7 @@ public final class HybridSearchSql {
             FULL OUTER JOIN keyword ON keyword.id = semantic.id
             JOIN knowledge_chunk c ON c.id = COALESCE(semantic.id, keyword.id)
             ORDER BY score DESC, c.id
-            LIMIT :limit""".formatted(RRF_K);
+            LIMIT :limit""".formatted(RRF_K, normalizeIds(":query"));
 
     private HybridSearchSql() {
     }

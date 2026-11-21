@@ -59,7 +59,7 @@ depguard/
   api/          ScanController, TriageController, KnowledgeController
   lambda/       StreamLambdaHandler (AWS Lambda entry point)
   security/     SecurityConfig, roles
-  evals/        GoldenSet.json, EvalRunner (JUnit), LlmJudge, ModelBenchmark
+  evals/        (test sources) TriageOracle, TriageChecks, TriageJudge, TriageEval, RetrievalEval
 infra/          serverless/ (used), fargate/ (alternative)
 ```
 
@@ -72,8 +72,8 @@ Each phase ends with something that can be demoed.
 | 1 | Scan API: parse pom, batch-query OSV, ranked report. No LLM. Serverless deploy. | REST API, Java 21, cloud | ✅ Done |
 | 2 | Spring AI agent on Amazon Bedrock with tools (OSV, EPSS, CISA KEV); prompt templates in `resources/prompts/` | Tool calling, prompt design | ✅ Done |
 | 3 | Hybrid RAG over advisories and migration guides; Aurora Serverless v2 via the RDS Data API | RAG, data | ✅ Done |
-| 4 | Golden set of ~50 cases from OSV ground truth + LLM judge, in CI | Evals | ⏭️ Next |
-| 5 | Langfuse traces: tokens, cost, latency, failures | LLM observability | |
+| 4 | Golden sets (16 triage poms, 30 retrieval queries), oracle from live data, code checks + LLM judge, CI workflow | Evals | ✅ Done |
+| 5 | Langfuse traces: tokens, cost, latency, failures | LLM observability | ⏭️ Next |
 | 6 | Semantic cache, prompt caching, model router, with before/after numbers | Cost and performance | |
 | 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection | |
 | 8 | Spring Security, human-approved upgrade PRs, production hardening | Security, guardrails | |
@@ -93,4 +93,6 @@ Each phase ends with something that can be demoed.
 2. **Why an agent.** A scanner recommends spring-web 5 → 6 but can't say that it also needs Java 17+ and the `javax` → `jakarta` change. The triage agent explains that, and ranks fixes by known exploitation (CISA KEV) and exploit probability (EPSS), not just severity.
 3. **Grounded upgrade advice.** The agent looks up official migration guides (Spring Boot, Spring Framework, Jackson) through hybrid search, and the response lists the sources it read.
 4. **Grounded answers.** Every CVE in an AI answer is checked in code against what the tools returned; in a live run all 11 cited CVEs were verified. A triage costs about $0.015.
-5. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.
+5. **Measured quality.** Evals turned guesses into numbers: hybrid retrieval hit@5 0.87 vs 0.70 for vectors alone
+   (after an eval exposed broken CVE-ID search), and the ranking rule followed in 100% of runs (from 97%).
+6. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.

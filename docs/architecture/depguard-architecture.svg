@@ -133,6 +133,7 @@
 
   <!-- ============ Later phases ============ -->
   <text x="20" y="642" font-size="13" font-weight="700" fill="#0f172a">Coming in later phases</text>
+  <text x="1005" y="642" font-size="11" fill="#475569" text-anchor="end">Evals: ./mvnw test -Pevals (golden sets, code checks + Nova Pro judge)</text>
   <g fill="#ffffff" stroke="#94a3b8" stroke-dasharray="5 4">
     <rect x="20" y="652" width="235" height="48" rx="8"/>
     <rect x="275" y="652" width="235" height="48" rx="8"/>
@@ -140,12 +141,12 @@
     <rect x="785" y="652" width="220" height="48" rx="8"/>
   </g>
   <g font-size="12" fill="#64748b" text-anchor="middle">
-    <text x="137" y="672" font-weight="700">Golden-set evals · phase 4</text>
-    <text x="137" y="689" font-size="11">OSV ground truth + LLM judge</text>
-    <text x="392" y="672" font-weight="700">Langfuse · phase 5</text>
-    <text x="392" y="689" font-size="11">LLM traces, tokens, cost</text>
-    <text x="647" y="672" font-weight="700">Cost and speed · phase 6</text>
-    <text x="647" y="689" font-size="11">semantic cache, model routing</text>
+    <text x="137" y="672" font-weight="700">Langfuse · phase 5</text>
+    <text x="137" y="689" font-size="11">LLM traces, tokens, cost</text>
+    <text x="392" y="672" font-weight="700">Cost and speed · phase 6</text>
+    <text x="392" y="689" font-size="11">semantic cache, model routing</text>
+    <text x="647" y="672" font-weight="700">Model benchmark · phase 7</text>
+    <text x="647" y="689" font-size="11">quality vs latency vs cost</text>
     <text x="895" y="672" font-weight="700">Spring Security · phase 8</text>
     <text x="895" y="689" font-size="11">JWT authorizer, roles</text>
   </g>

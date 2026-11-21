@@ -24,6 +24,8 @@
         <spring-ai.version>2.1.0</spring-ai.version>
         <!-- Same AWS SDK version Spring AI's Bedrock modules use, so every SDK module matches -->
         <aws-sdk.version>2.55.14</aws-sdk.version>
+        <!-- Evals (tag "eval") call Bedrock and cost money, so ./mvnw test skips them; -Pevals runs only them. -->
+        <excludedGroups>eval</excludedGroups>
     </properties>
 
     <dependencyManagement>
@@ -157,6 +159,31 @@
           (not a container image). So this profile copies the dependency jars into lib/ and zips them
           with the compiled classes: the layout Lambda's Java runtime expects.
         -->
+        <!--
+          ./mvnw test -Pevals  ->  quality evals against live data and Bedrock (see README "Evals").
+          Needs AWS credentials, and the local knowledge base for the retrieval eval. Costs about $1 per run.
+        -->
+        <profile>
+            <id>evals</id>
+            <properties>
+                <groups>eval</groups>
+                <excludedGroups>none</excludedGroups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <!-- Surefire only picks up *Test classes by default; the evals are named *Eval. -->
+                            <includes>
+                                <include>**/*Eval.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
         <profile>
             <id>lambda</id>
             <build>

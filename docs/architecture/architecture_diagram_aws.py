@@ -164,12 +164,14 @@ arrow("M370 815 L 446 815", GREY)
 icon("lambda", 500, 815, ["New Lambda version", "SnapStart snapshot"], size=50, label_size=14)
 arrow("M555 815 L 596 815", GREY)
 step(600, 780, 170, 72, "Health check", ["GET /actuator/health", "prints URL + key cmd"], GREY, "#FFFFFF")
-text(50, 912, "Then once (and to refresh): scripts/ingest.sh aws  —  OSV export + migration guides → Titan embeddings → Aurora",
+text(50, 900, "Then once (and to refresh): scripts/ingest.sh aws  —  OSV export + migration guides → Titan embeddings → Aurora",
+     size=13.5, color=GREY, anchor="start")
+text(50, 918, "Quality: ./mvnw test -Pevals  —  golden sets, code checks + an Amazon Nova Pro judge",
      size=13.5, color=GREY, anchor="start")
 
 # ------------------------------------------------------------------ story 3: later phases
 panel(810, 720, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
-badge(940, 805, "4", ["Golden-set evals", "phase 4 · OSV ground truth + judge"], PURPLE, "#F3F0FF")
+badge(940, 805, "6", ["Semantic cache, model routing", "phase 6 · cost and latency"], PURPLE, "#F3F0FF")
 icon("langfuse", 1190, 815, ["Langfuse", "phase 5 · LLM traces"], size=50, label_size=14)
 icon("springsecurity", 1440, 815, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
 

@@ -1,0 +1,83 @@
+# CI for DepGuard.
+#
+# - "test" runs on every push and pull request: the free test suite (no AWS, no LLM calls).
+#   Testcontainers runs the pgvector tests against Docker on the GitHub runner.
+# - "evals" runs only when started by hand (Actions tab -> CI -> Run workflow -> tick "run_evals"),
+#   and only once the repository variable AWS_EVAL_ROLE_ARN is set (see infra/ci/README.md).
+#   It costs about $1 per run (Bedrock), so it never runs automatically.
+#
+# Actions are pinned to full commit SHAs (the tag is in the comment): a tag can be moved, a SHA can't.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_evals:
+        description: "Also run the paid quality evals (about $1 of Bedrock usage)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Unit and integration tests (evals excluded)
+        run: ./mvnw -B test
+
+  evals:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.run_evals && vars.AWS_EVAL_ROLE_ARN != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # lets the job get short-lived AWS credentials through OIDC; no stored AWS keys
+    services:
+      # A throwaway pgvector database that lives only for this job. Trust auth: no password to manage.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: depguard
+          POSTGRES_USER: depguard
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U depguard" --health-interval 5s --health-retries 10
+    env:
+      AWS_REGION: us-east-1
+      DEPGUARD_RAG_STORE: jdbc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Build
+        run: ./mvnw -B -q -DskipTests package
+      - name: Fill the knowledge base (~4 min, ~$0.05 of embeddings)
+        run: java -jar target/depguard-0.1.0-SNAPSHOT.jar --spring.profiles.active=ingest
+      - name: Retrieval and triage evals
+        run: ./mvnw -B test -Pevals
+      - name: Upload scorecards
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-scorecards
+          path: target/evals/

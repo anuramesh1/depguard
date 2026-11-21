@@ -5,8 +5,9 @@ Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and wha
 
 Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
-> **Status: phases 1–3 of 8.** A scan API (no LLM), an AI triage agent with tool calling, and a hybrid-search (RAG)
-> knowledge base of every OSV Maven advisory plus official migration guides. 55 tests (3 of them need Docker).
+> **Status: phases 1–4 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
+> knowledge base of every OSV Maven advisory plus official migration guides, and quality evals (golden sets graded by
+> code checks and an LLM judge). 63 tests (3 of them need Docker), plus 2 eval suites run with `-Pevals`.
 > All three verified end to end against live data and Bedrock.
 > Deploys to AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle) with `scripts/deploy.sh`;
 > removed with `scripts/teardown.sh`.
@@ -111,7 +112,8 @@ Sample answer for `samples/vulnerable-pom.xml` (live run: 3 tool calls, ~12 s, ~
 ```
 
 The response also lists `citedCves` and `unverifiedCves` (empty here: all 11 CVEs came from tools), the tool trace and token counts.
-Known weakness, for phase 4's evals: here the model ranked commons-text (EPSS 99.9%) below jackson-databind (26.6%), against its own rules.
+Weakness seen here: the model ranked commons-text (EPSS 99.9%) below jackson-databind (26.6%), against its own rules.
+Phase 4's evals measured it and a prompt change fixed it (see [Evals](#evals-phase-4-how-good-are-the-answers)).
 
 ### Knowledge base with hybrid search (phase 3): `GET /api/knowledge/search`
 
@@ -166,19 +168,105 @@ Jakarta EE migration required: switch `javax.servlet` imports to `jakarta.servle
 Java 17+ required. Maven group ID changes from `com.fasterxml.jackson` to `tools.jackson` (except `jackson-annotations`) …
 ```
 
-A new weakness for phase 4's evals: having read the Jackson 3 guide, the model claimed jackson-databind "requires" Jackson 3
+A weakness this run showed (now a phase 4 eval case): having read the Jackson 3 guide, the model claimed jackson-databind "requires" Jackson 3
 for full security, although 2.18.11 already fixes the listed CVEs. Retrieval can pull an answer off course, which is why
 RAG needs evals, not just a guardrail.
 
 **Why not Spring AI's `PgVectorStore`:** it needs JDBC, and on AWS the app reaches Aurora through the Data API (HTTPS + IAM)
 to avoid putting the Lambda in a VPC with a NAT gateway (~$32/month). Hand-written SQL also keeps the RRF query visible.
 
+## Evals (phase 4): how good are the answers?
+
+Guardrails stop specific failures; evals **measure quality**, so a prompt or model change can be judged by numbers.
+Two suites, run with `./mvnw test -Pevals` (excluded from `./mvnw test` because they call Bedrock):
+
+| Suite | What it measures | Cost per run |
+|---|---|---|
+| [RetrievalEval](src/test/java/dev/depguard/evals/RetrievalEval.java) | 30 golden queries → hit@1, hit@5, MRR@10 for vector-only, keyword-only and hybrid search | < $0.01 |
+| [TriageEval](src/test/java/dev/depguard/evals/TriageEval.java) | 16 golden poms × 2 runs, graded by code checks and an LLM judge | ~$0.42 full · ~$0.08 smoke · $0 replay |
+
+**How the triage eval grades an answer:**
+- **Ground truth from live data, not hand-written answers.** [TriageOracle](src/test/java/dev/depguard/evals/TriageOracle.java)
+  calls the same tools as the agent (OSV, EPSS, KEV) and applies the ranking rule in plain code, so the golden set
+  ([triage-golden.json](src/test/resources/evals/triage-golden.json)) never goes stale when advisories change. Cases only
+  say what data can't: what the answer must mention, and what it must never say.
+- **Code checks** ([TriageChecks](src/test/java/dev/depguard/evals/TriageChecks.java)): objective and free.
+  *Gates* must pass on every run or the build fails (only verified CVEs cited, every vulnerable dependency mentioned,
+  no forbidden text such as prompt-injection output). *Tracked* checks report a pass rate (top pick follows "KEV, then
+  EPSS", pairwise order, recommended version ≥ OSV's fix, no false alarms, framework modules on one major version).
+  The graders have their own unit tests ([TriageChecksTest](src/test/java/dev/depguard/evals/TriageChecksTest.java)).
+- **LLM judge** ([TriageJudge](src/test/java/dev/depguard/evals/TriageJudge.java), [rubric](src/test/resources/evals/judge-rubric.md)):
+  **Amazon Nova Pro**, a different model family from the agent (judges favour their own style), given the oracle's
+  facts as evidence, scoring four dimensions on anchored 1-5 scales, as structured JSON at temperature 0.
+- **Repeats:** each case runs twice; the failures that matter are intermittent.
+
+**Results** (2026-11-21; scorecards are written to `target/evals/`):
+
+| Triage metric | Round 1 (baseline) | Final |
+|---|---|---|
+| Gates (grounding, safety) | 100% | 100% |
+| Top pick follows the ranking rule | 97% | **100%** |
+| Pairwise ranking, recommended versions, no false alarms | 100% | 100% |
+| Expected content mentioned | 78% | 83% |
+| Judge: factual accuracy / upgrade notes accuracy (mean, 1-5) | 4.34 / 3.88 | **4.66 / 4.81** |
+| Latency p50 / p95 · agent cost per triage | 4.7 s / 11.3 s · $0.012 | 4.6 s / 10.6 s · $0.012 |
+
+| Retrieval (30 queries) | hit@1 | hit@5 | MRR@10 |
+|---|---|---|---|
+| Vector only | 0.60 | 0.70 | 0.65 |
+| Keyword only | 0.37 | 0.57 | 0.45 |
+| **Hybrid (RRF)** | **0.70** | **0.87** | **0.79** |
+
+**What the evals found and what changed** (the point of evals: each fix is measured, not assumed):
+1. **Exact CVE search was broken.** Postgres splits `CVE-2022-42889` into `cve`, `-2022` and `-42889`, so keyword search
+   matched every "2022" advisory: 0/8 CVE queries found. Rewriting CVE IDs into one token in the index and the query:
+   8/8 in the top 5, and hybrid hit@5 rose from 0.63 (worse than vector alone) to 0.87.
+2. **Fusion weights are a trade-off, not a free win.** A sweep in the retrieval report shows that down-weighting the
+   keyword half helps natural-language queries but breaks every exact-ID query; plain RRF (weight 1) was kept rather
+   than tuned to 30 queries. Next idea: route identifier queries to keyword search.
+3. **The agent ranked by advisory count** (H2 with 4 advisories above SnakeYAML with 99.5% EPSS). Prompt rule added
+   ("do not rank by the number of advisories"): top pick 97% → 100%.
+4. **Unchecked dependencies went unreported**: the output template ("Can wait … or 'Nothing else.'") beat a separate
+   rule. Moving the instruction into the template fixed the focused case (9/9 runs); it still slips occasionally.
+5. **Mixed framework versions** (spring-webmvc → 7.0.9 with spring-beans → 5.3.20) were spotted by reading answers, then
+   turned into a code check and a prompt rule. Lesson: read outputs; evals only catch what someone thought to check.
+6. **The judge was wrong too.** Round 1 flagged correct answers: 2026 CVEs called "future", 5 → 6 called "same major",
+   per-CVE facts called unsupported, because its evidence was coarser than the answer. Fix: per-CVE facts, a computed
+   "major upgrade" flag, precise numbers. Nova Pro still nitpicks rounding despite the rubric, so its factual score is
+   conservative; but it also caught real errors no check did (a "99.8%" typo for 99.98%; the EPSS *percentile* quoted as
+   the *probability*).
+7. **The eval setup itself had a bug**: `-Pevals` ran 0 tests because Surefire only picks up `*Test` classes. A green
+   build that tested nothing; fixed by including `*Eval`.
+
+Still open (tracked, not gated): "Java 17" is missing from the spring-web 5 → 6 notes in most runs, and an occasional
+irrelevant Jackson 3 note. Phase 7 reuses these suites to compare models.
+
+**Running them, cheapest first** (the agent's Claude calls are ~88% of the cost, so the savings come from not
+re-running the agent when it isn't needed):
+
+| When | Command | ≈ Cost | Time |
+|---|---|---|---|
+| Changing a check, the rubric or the oracle | `./mvnw test -Pevals -Dtest=TriageEval -Devals.replay=target/evals/triage-scorecard.json -Devals.judge=false` | $0 | ~15 s |
+| … and re-judging too | same, without `-Devals.judge=false` | ~$0.05 | ~1 min |
+| Iterating on a prompt | `./mvnw test -Pevals -Dtest=TriageEval -Devals.tier=smoke` (5 smoke cases × 1 run) | ~$0.08 | ~20 s |
+| Checking one case for flakiness | `./mvnw test -Pevals -Dtest=TriageEval -Devals.cases=sample-pom -Devals.repeats=3` | ~$0.06 | ~30 s |
+| Before a commit | `./mvnw test -Pevals` (both suites; needs the local knowledge base) | ~$0.42 | ~1 min |
+
+**Replay** re-grades the answers saved in a previous scorecard with the current checks and judge, without calling the
+agent; the graders run exactly the same code as in a live run (verified: a replay reproduced the live results).
+It overwrites `target/evals/triage-scorecard.*`, so copy the file first to keep old grades. Smoke cases are marked
+`"smoke": true` in [triage-golden.json](src/test/resources/evals/triage-golden.json).
+
+**In CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): every push runs the free test suite (actions pinned to
+commit SHAs). The evals job runs only when started by hand and only after an AWS role for GitHub (OIDC, no stored keys)
+is created; see [infra/ci/README.md](infra/ci/README.md).
+
 ## Local demo (free)
 
 Prerequisite: **JDK 21+** (`brew install --cask temurin@21`). Maven comes with the project (`./mvnw`).
 
 ```bash
-./mvnw test                     # 55 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
+./mvnw test                     # 63 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
 ./mvnw spring-boot:run          # starts on http://localhost:8080
 
 curl -s -X POST localhost:8080/api/scans \
@@ -362,7 +450,7 @@ The phase 6 semantic cache answers "have we answered a question like this before
 | **1** ✅ | Scan API over OSV | Spring Boot Web, Java 21, API design |
 | **2** ✅ | Spring AI agent on Bedrock with tools (OSV, EPSS, CISA KEV), prompt templates, citation guardrail | Agent tool calling, prompt design |
 | **3** ✅ | Hybrid RAG over advisories and migration guides (pgvector + full-text + RRF), Aurora via the Data API | RAG, data |
-| 4 | Golden-set evals from OSV ground truth + LLM-as-judge, in CI | Evals design |
+| **4** ✅ | Golden-set evals: oracle from live OSV/EPSS/KEV, code checks + Nova Pro judge, retrieval metrics, CI workflow | Evals design |
 | 5 | Langfuse traces: tokens, cost, latency, failures | LLM observability |
 | 6 | Semantic cache, prompt caching, model routing | Cost and performance optimization |
 | 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection |
