@@ -28,8 +28,9 @@ import org.springframework.security.web.SecurityFilterChain;
  *
  * <table>
  *   <tr><th>Endpoint</th><th>Who</th><th>Why</th></tr>
- *   <tr><td>/api/scans, /actuator/health</td><td>anyone</td><td>no model cost; throttled by API Gateway</td></tr>
- *   <tr><td>/api/triage, /api/knowledge, propose upgrades</td><td>VIEWER or MAINTAINER</td><td>model cost</td></tr>
+ *   <tr><td>/actuator/health</td><td>anyone</td><td>deploy checks; returns only UP or DOWN</td></tr>
+ *   <tr><td>/api/scans, /api/triage, /api/knowledge, propose upgrades</td><td>VIEWER or MAINTAINER</td>
+ *       <td>only people the owner added; model and AWS cost</td></tr>
  *   <tr><td>approve / reject an upgrade</td><td>MAINTAINER</td><td>opens a pull request: a human decision</td></tr>
  * </table>
  *

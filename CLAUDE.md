@@ -43,7 +43,7 @@ This is a public repo: keep personal notes and context out of committed files. T
   - The Fargate version lives on in `infra/fargate/` as a documented alternative, not wired to the scripts.
     Production options and costs are in README "Design alternatives". The semantic cache will use pgvector, not ElastiCache.
 
-## Status (updated 2026-11-20)
+## Status (updated 2026-11-22)
 - **Phase 1 done:** `POST /api/scans` parses a pom, batch-queries OSV, fetches advisories in parallel, returns findings ranked by severity with a recommended upgrade version.
 - **Phase 2 done:** `POST /api/triage` runs a Spring AI agent on Bedrock with tools `findVulnerabilities` (OSV via ScanService),
   `getExploitProbability` (FIRST EPSS) and `checkKnownExploited` (CISA KEV feed, cached 6 h). Prompts are in `resources/prompts/`.
@@ -91,7 +91,7 @@ This is a public repo: keep personal notes and context out of committed files. T
   Llama 4 Scout partly "Legacy, not activated"; Pixtral Large throttled (low quota). Account can now call Claude Sonnet 4.5.
 - **Phase 8 done (2026-11-21):** security + production hardening, all kept free.
   - Auth: Cognito user pool (Lite tier, admin-created users, groups VIEWER/MAINTAINER, public client, USER_PASSWORD_AUTH,
-    60-min access tokens) → API Gateway JWT authorizer on paid routes → Spring Security resource server (`security/SecurityConfig`:
+    60-min access tokens) → API Gateway JWT authorizer on every route except health → Spring Security resource server (`security/SecurityConfig`:
     JWKS, issuer, client_id, token_use=access; `cognito:groups` → ROLE_*). Auth is off when `DEPGUARD_AUTH_ISSUER_URI` is
     blank (local, evals). Only `GET /actuator/health` is public: API Gateway's `$default` route needs a JWT (unknown paths never start the Lambda) and Spring requires VIEWER/MAINTAINER on scans too. `ApiKeyFilter` and the Terraform random API key were removed.
   - Upgrades (`upgrade/`): `POST /api/upgrades` (any role) proposes from the GitHub pom; `/{id}/approve` (MAINTAINER,
@@ -103,7 +103,7 @@ This is a public repo: keep personal notes and context out of committed files. T
     Terraform gets only `secrets_version` so new secrets roll the Lambda. teardown.sh deletes them.
   - `monitoring.tf`: 4 alarms → SNS email (`ALERT_EMAIL`), AWS Budget ($25, 80% actual / 100% forecast), reserved concurrency 5.
   - Scripts: `users.sh add|remove|list`, `token.sh <user>` (passwords via no-echo prompt or `DEPGUARD_PASSWORD`).
-- **Tests:** 91 (`./mvnw test`), all pass; the Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
+- **Tests:** 92 (`./mvnw test`), all pass; the Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
 - **Bedrock access (2026-11-21):** Claude **Haiku 4.5**, **Sonnet 4.5**, Opus 4.1, Nova family, Pixtral Large, Writer Palmyra; earlier only (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) and Titan Text Embeddings v2.
   Haiku 5.5 and Sonnet 5.5 return AccessDenied ("not available for this account"). The model is configurable (`model_id` in Terraform).
 - **Deploy:** first applied 2026-11-22 (39 resources; Aurora took ~7 min). Fixes found on the first deploy: Boot's disk-space health check is always DOWN on Lambda (disabled); SecurityConfig must be `@ConditionalOnWebApplication` (ingest runs without a web server); GitHub URLs must be built from path segments (`{repo}` with a "/" became %2F → 404). The AWS CLI can't read `file:///dev/stdin` on macOS: scripts pass secret JSON through a private temp file (`aws_json`). The owner's AWS CLI uses access keys, not SSO. Lambda zip ~45 MB, uploaded through S3. The account has no default VPC in us-east-1 (hence aurora.tf's own VPC).
@@ -118,6 +118,9 @@ This is a public repo: keep personal notes and context out of committed files. T
    20 observations (keys from SSM; Lambda env holds no secrets), 4 alarms OK, reserved concurrency 5.
    The account-wide budget was already over $10 from other projects on first deploy, so it was raised to $25 (variable `monthly_budget_usd`).
 2. All 8 phases are built. Further ideas are in the README's production checklist.
+3. 2026-11-22: test users removed; the owner's own MAINTAINER login exists. Approving an upgrade needs a second
+   MAINTAINER (four-eyes). Demo PR #1 on depguard-demo-app is left open on purpose. `users.sh add` now deletes the
+   user again if Cognito rejects the password. The SNS alarm email subscription needs confirming by the owner.
 
 ## Running in IntelliJ
 - Open the `depguard` folder; IntelliJ imports the Maven project from `pom.xml`.
