@@ -38,7 +38,11 @@ case "${1:-}" in
     # Permanent password: no "change it at first login" step for a demo user.
     SECRET_VALUE="$password" python3 -c 'import json,os,sys; print(json.dumps({"UserPoolId": sys.argv[1], "Username": sys.argv[2],
       "Password": os.environ["SECRET_VALUE"], "Permanent": True}))' "$POOL" "$user" \
-      | aws_json cognito-idp admin-set-user-password --region "$REGION"
+      | aws_json cognito-idp admin-set-user-password --region "$REGION" || {
+        # Don't leave a user with no password and no role behind: remove it so "add" can simply be run again.
+        aws cognito-idp admin-delete-user --region "$REGION" --user-pool-id "$POOL" --username "$user" || true
+        fail "Password not accepted (min 14 chars, with an uppercase letter, a lowercase letter and a digit). Nothing was kept; run the same command again."
+      }
     aws cognito-idp admin-add-user-to-group --region "$REGION" --user-pool-id "$POOL" --username "$user" --group-name "$group"
     echo "Added $user as $group."
     ;;
