@@ -23,7 +23,7 @@ fi
 [[ -f "$TF_DIR/terraform.tfvars" ]] || fail "infra/serverless/terraform.tfvars is missing; it records the region deploy.sh used."
 
 aws sts get-caller-identity >/dev/null 2>&1 \
-  || fail "No AWS credentials. Run 'aws sso login' (or 'aws configure'), or set AWS_PROFILE."
+  || fail "No AWS credentials. Run 'aws configure' (access keys) or 'aws sso login' (SSO), or set AWS_PROFILE."
 
 step "These resources will be DELETED"
 terraform -chdir="$TF_DIR" state list | sed 's/^/  /'
@@ -41,6 +41,18 @@ terraform -chdir="$TF_DIR" destroy -input=false -auto-approve -var "package_path
 
 if [[ -n "$(terraform -chdir="$TF_DIR" state list 2>/dev/null)" ]]; then
   fail "Some resources are still in the state. Re-run scripts/teardown.sh."
+fi
+
+# The secrets live outside Terraform (deploy.sh writes them, so their values never enter Terraform state).
+step "Deleting the /depguard/ secrets from SSM Parameter Store"
+REGION=$(sed -n 's/^region = "\(.*\)"/\1/p' "$TF_DIR/terraform.tfvars")
+names=$(aws ssm get-parameters-by-path --region "$REGION" --path /depguard/ --recursive \
+  --query 'Parameters[].Name' --output text)
+if [[ -n "$names" && "$names" != "None" ]]; then
+  # shellcheck disable=SC2086  # word splitting is intended: one argument per parameter name
+  aws ssm delete-parameters --region "$REGION" --names $names --query 'DeletedParameters' --output text
+else
+  echo "  none found"
 fi
 
 echo

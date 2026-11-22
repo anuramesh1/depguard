@@ -12,11 +12,6 @@ output "live_version" {
   value       = aws_lambda_alias.live.function_version
 }
 
-output "api_key" {
-  description = "Send as the X-Api-Key header to call /api/triage and /api/knowledge."
-  value       = random_password.api_key.result
-  sensitive   = true
-}
 
 output "log_group" {
   value = aws_cloudwatch_log_group.app.name
@@ -29,4 +24,18 @@ output "rag_cluster_arn" {
 
 output "rag_secret_arn" {
   value = aws_rds_cluster.knowledge.master_user_secret[0].secret_arn
+}
+
+# Login: scripts/users.sh and scripts/token.sh use these.
+output "cognito_user_pool_id" {
+  value = aws_cognito_user_pool.users.id
+}
+
+output "cognito_client_id" {
+  value = aws_cognito_user_pool_client.api.id
+}
+
+output "alerts_topic" {
+  description = "SNS topic the alarms notify (confirm the email subscription AWS sends you)."
+  value       = aws_sns_topic.alerts.arn
 }

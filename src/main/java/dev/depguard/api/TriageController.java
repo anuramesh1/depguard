@@ -19,7 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
  *      -H 'Content-Type: application/xml' --data-binary @samples/vulnerable-pom.xml
  * </pre>
  *
- * When deployed, this endpoint needs an X-Api-Key header (see {@link ApiKeyFilter}): every call costs model tokens.
+ * When deployed, this endpoint needs a Cognito access token with the VIEWER or MAINTAINER role (see SecurityConfig): every call costs model tokens.
  */
 @RestController
 @RequestMapping("/api/triage")

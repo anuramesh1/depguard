@@ -20,7 +20,7 @@ data "aws_iam_policy_document" "lambda_assume" {
   }
 }
 
-# Least privilege: write its own logs, call two Bedrock models, and run SQL on one Aurora cluster.
+# Least privilege: write its own logs, call two Bedrock models, run SQL on one Aurora cluster, read its own SSM parameters.
 resource "aws_iam_role" "lambda" {
   name               = "${var.app_name}-lambda"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -43,6 +43,8 @@ resource "aws_lambda_function" "app" {
   memory_size      = var.memory_mb
   timeout          = 30   # API Gateway HTTP APIs wait at most 30 s anyway
   publish          = true # SnapStart needs published versions
+  # Hard cap on simultaneous executions: with API Gateway's throttle, this bounds what a traffic spike can cost.
+  reserved_concurrent_executions = var.max_concurrency
 
   snap_start {
     apply_on = "PublishedVersions"
@@ -54,26 +56,29 @@ resource "aws_lambda_function" "app" {
       JAVA_TOOL_OPTIONS = "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
       # Which Bedrock model the agent uses (Spring's relaxed binding of spring.ai.bedrock...model).
       SPRING_AI_BEDROCK_CONVERSE_CHAT_OPTIONS_MODEL = var.model_id
-      # Callers of /api/triage and /api/knowledge must send this as the X-Api-Key header (see ApiKeyFilter).
-      DEPGUARD_API_KEY = random_password.api_key.result
+      # Login: tokens from this Cognito user pool and app client (see cognito.tf and SecurityConfig).
+      DEPGUARD_AUTH_ISSUER_URI = local.cognito_issuer
+      DEPGUARD_AUTH_CLIENT_ID  = aws_cognito_user_pool_client.api.id
+      # Secrets (Langfuse keys, GitHub token) are read from SSM Parameter Store at startup, not set here.
+      DEPGUARD_SSM_PATH = "/${var.app_name}/"
+      # Changes whenever a secret changes (deploy.sh passes the SSM parameter versions), so a new Lambda version and
+      # SnapStart snapshot are made with the new values. It contains version numbers, never the secrets.
+      DEPGUARD_SECRETS_VERSION   = var.secrets_version
+      DEPGUARD_GITHUB_REPOSITORY = var.github_repository
       # RAG knowledge base: Aurora through the RDS Data API (see aurora.tf)
       DEPGUARD_RAG_STORE                      = "data-api"
       DEPGUARD_RAG_CLUSTER_ARN                = aws_rds_cluster.knowledge.arn
       DEPGUARD_RAG_SECRET_ARN                 = aws_rds_cluster.knowledge.master_user_secret[0].secret_arn
       SPRING_AI_BEDROCK_TITAN_EMBEDDING_MODEL = var.embedding_model_id
-      # Tracing to Langfuse (off when the keys are empty). Lambda freezes the process after each response,
-      # so spans must be flushed before it returns (see TraceFlushFilter).
-      # Demo trade-off: the secret key sits in the Lambda configuration and the local Terraform state (both
-      # encrypted at rest). Production: keep it in Secrets Manager and read it at startup.
+      # Tracing to Langfuse (keys from SSM). Lambda freezes the process after each response, so spans must be
+      # flushed before it returns (see TraceFlushFilter).
       LANGFUSE_HOST                = var.langfuse_host
-      LANGFUSE_PUBLIC_KEY          = var.langfuse_public_key
-      LANGFUSE_SECRET_KEY          = var.langfuse_secret_key
       LANGFUSE_FLUSH_AFTER_REQUEST = "true"
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.app, aws_iam_role_policy_attachment.logs, aws_iam_role_policy.bedrock,
-  aws_iam_role_policy.data_api]
+  aws_iam_role_policy.data_api, aws_iam_role_policy.ssm]
 }
 
 resource "aws_lambda_alias" "live" {

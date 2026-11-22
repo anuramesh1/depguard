@@ -1,7 +1,7 @@
 # API Gateway HTTP API: the public HTTPS URL in front of the Lambda.
 #
-# Chosen over a Lambda Function URL because it has built-in throttling. The URL is public, so the
-# throttle caps what anyone could cost you by hammering it.
+# Chosen over a Lambda Function URL because it has built-in throttling and a free JWT authorizer. The URL is public,
+# but every route except the health check needs a Cognito login; the throttle caps the rest.
 # HTTPS comes free with the default execute-api domain.
 
 resource "aws_apigatewayv2_api" "app" {
@@ -17,10 +17,33 @@ resource "aws_apigatewayv2_integration" "lambda" {
   timeout_milliseconds   = 30000
 }
 
-# Send every path and method to Spring; its controllers do the routing.
+# Paid and private routes need a valid Cognito access token, checked here before a Lambda even starts (and
+# checked again, with roles, by Spring Security: defence in depth). The authorizer is free.
+resource "aws_apigatewayv2_authorizer" "cognito" {
+  api_id           = aws_apigatewayv2_api.app.id
+  name             = "cognito"
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  jwt_configuration {
+    issuer   = local.cognito_issuer
+    audience = [aws_cognito_user_pool_client.api.id] # matched against the access token's client_id
+  }
+}
+
+# Every request needs a login, including unknown paths: a bot probing /wp-login.php is refused by API Gateway and never
+# starts the Lambda. Only users created with scripts/users.sh can log in (Cognito sign-up is off).
 resource "aws_apigatewayv2_route" "all" {
+  api_id             = aws_apigatewayv2_api.app.id
+  route_key          = "$default"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# The one public route: deploy.sh's health check. It returns only {"status":"UP"} or DOWN.
+resource "aws_apigatewayv2_route" "health" {
   api_id    = aws_apigatewayv2_api.app.id
-  route_key = "$default"
+  route_key = "GET /actuator/health"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 

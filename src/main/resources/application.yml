@@ -44,8 +44,10 @@ spring:
       embedding: bedrock-titan # Spring AI's Bedrock starter has two embedding models; use Titan
 
 depguard:
-  # Required as the X-Api-Key header on /api/triage and /api/knowledge when set. Empty locally; Terraform sets it on Lambda.
-  api-key: ${DEPGUARD_API_KEY:}
+  auth:
+    # Cognito user pool issuer and app client (Terraform sets them on Lambda). Empty locally = no authentication.
+    issuer-uri: ${DEPGUARD_AUTH_ISSUER_URI:}
+    client-id: ${DEPGUARD_AUTH_CLIENT_ID:}
   osv:
     base-url: https://api.osv.dev
     connect-timeout: 3s
@@ -69,6 +71,13 @@ depguard:
     enabled: ${DEPGUARD_ANSWER_CACHE:true}
     ttl: 6h                      # exploit data changes daily; DepGuard caches KEV for 6 h too
     similarity-threshold: 0.55   # measured: 3/6 paraphrases match, 0/7 different questions (see AnswerCacheProperties)
+  github:
+    # Human-approved upgrade pull requests (phase 8). Token: fine-grained, this repository only, from .env / SSM.
+    token: ${GITHUB_TOKEN:}
+    repository: ${DEPGUARD_GITHUB_REPOSITORY:anuramesh1/depguard-demo-app}
+    base-branch: main
+    pom-path: pom.xml
+    api-url: https://api.github.com
   pricing:
     # USD per million tokens, us-east-1 on-demand, from the AWS Price List API (2026-11-21). Used for the cost on every
     # model-call span and in the evals. Note: Claude through a "us." (geographic) inference profile costs 10% more than
@@ -146,6 +155,9 @@ management:
     web:
       exposure:
         include: health,info # expose only what a load balancer needs
+  health:
+    diskspace:
+      enabled: false         # on Lambda the code folder (/var/task) is read-only with 0 bytes free: always "DOWN"
   tracing:
     sampling:
       probability: 1.0       # Boot's default (0.1) would drop 9 of 10 traces; every triage matters here

@@ -34,9 +34,3 @@ resource "aws_iam_role_policy" "bedrock" {
   policy = data.aws_iam_policy_document.bedrock.json
 }
 
-# API key for /api/triage and /api/knowledge. Generated once and kept in the (local, gitignored) Terraform state.
-# Read it with: terraform -chdir=infra/serverless output -raw api_key
-resource "random_password" "api_key" {
-  length  = 40
-  special = false
-}

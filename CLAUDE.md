@@ -19,11 +19,11 @@ This is a public repo: keep personal notes and context out of committed files. T
   (nothing listens on :8080). It is excluded in `application.yml`; the Lambda handler works without it.
 - **Spring AI 2.1.0** (not LangChain4j): Spring-native, and its Micrometer observability makes the Langfuse phase easier.
 - **Amazon Bedrock** for models (owner's choice): IAM role on Lambda, no API key to store; Converse API via `spring-ai-starter-model-bedrock-converse`.
-- Single Spring Boot app, no microservices. Packages: `dependency`, `osv`, `scan`, `exploit`, `agent`, `rag`, `cache`, `observability`, `api`, `lambda`; evals live in test sources (`evals`). Later: `security`.
+- Single Spring Boot app, no microservices. Packages: `dependency`, `osv`, `scan`, `exploit`, `agent`, `rag`, `cache`, `observability`, `security`, `upgrade`, `api`, `lambda`; evals live in test sources (`evals`).
 - Plain blocking code on virtual threads (`spring.threads.virtual.enabled=true`), no reactive stack.
 - Errors are RFC 9457 problem details. Upstream failures return 503 with a generic message; details go only to logs.
 - The pom parser rejects DOCTYPE (XXE protection). Dependencies with unknown versions are reported as `skipped`, never guessed.
-- **Langfuse Cloud** (free Hobby plan; owner's choice over self-hosting) for traces. docker-compose has Postgres+pgvector (RAG, local) and Redis (phase 6).
+- **Langfuse Cloud** (free Hobby plan; owner's choice over self-hosting) for traces. docker-compose has Postgres+pgvector (RAG, local) and Redis (unused: the cache is pgvector).
 - **Tracing (phase 5):** `observability/` package. Boot 4 `spring-boot-starter-opentelemetry` + `opentelemetry-exporter-otlp`;
   Boot's own OTLP exporter disabled; `LangfuseConfig` adds an `OtlpHttpSpanExporter` only when both keys are set.
   Sampling 1.0; `http.server/client.requests` observations disabled (were ~77 spans/triage). Spring AI 2.x log-prompt only
@@ -47,7 +47,7 @@ This is a public repo: keep personal notes and context out of committed files. T
 - **Phase 1 done:** `POST /api/scans` parses a pom, batch-queries OSV, fetches advisories in parallel, returns findings ranked by severity with a recommended upgrade version.
 - **Phase 2 done:** `POST /api/triage` runs a Spring AI agent on Bedrock with tools `findVulnerabilities` (OSV via ScanService),
   `getExploitProbability` (FIRST EPSS) and `checkKnownExploited` (CISA KEV feed, cached 6 h). Prompts are in `resources/prompts/`.
-  Guardrails: `CveCitationGuard` (answer CVEs must come from tools), max 8 tool calls (`TriageSession`), and an API key on paid endpoints when deployed.
+  Guardrails: `CveCitationGuard` (answer CVEs must come from tools), max 8 tool calls (`TriageSession`), and (until phase 8 replaced it with Cognito JWTs) an API key on paid endpoints.
   - Known flaw for phase 4 evals: it ranked commons-text (EPSS 99.9%) below jackson-databind (26.6%), against the prompt's own rule.
   - The first local triage attempt (phase 2) hung with no log output and never reproduced. If it recurs, take a virtual-thread dump with `jcmd <pid> Thread.dump_to_file`.
 - **Upgrade done (`baaed67`):** Spring Boot 4.1.3 + Spring AI 2.1.0.
@@ -89,25 +89,40 @@ This is a public repo: keep personal notes and context out of committed files. T
   Hard tool cap via `spring.ai.tools.limits` (4 calls, throw) + facts-only fallback in TriageAgent (also for Bedrock SdkException).
   Price table in application.yml from the AWS Price List API; `us.` Claude = +10% vs `global.` (earlier costs ~10% low).
   Llama 4 Scout partly "Legacy, not activated"; Pixtral Large throttled (low quota). Account can now call Claude Sonnet 4.5.
-- **Tests:** 81 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
+- **Phase 8 done (2026-11-21):** security + production hardening, all kept free.
+  - Auth: Cognito user pool (Lite tier, admin-created users, groups VIEWER/MAINTAINER, public client, USER_PASSWORD_AUTH,
+    60-min access tokens) → API Gateway JWT authorizer on paid routes → Spring Security resource server (`security/SecurityConfig`:
+    JWKS, issuer, client_id, token_use=access; `cognito:groups` → ROLE_*). Auth is off when `DEPGUARD_AUTH_ISSUER_URI` is
+    blank (local, evals). Only `GET /actuator/health` is public: API Gateway's `$default` route needs a JWT (unknown paths never start the Lambda) and Spring requires VIEWER/MAINTAINER on scans too. `ApiKeyFilter` and the Terraform random API key were removed.
+  - Upgrades (`upgrade/`): `POST /api/upgrades` (any role) proposes from the GitHub pom; `/{id}/approve` (MAINTAINER,
+    four-eyes, pom sha unchanged) opens a PR on `depguard/upgrade-<id8>`; GitHub failure rolls back to PENDING.
+    `PomUpgrader` edits only `<version>` text; `${property}` versions are skipped. Store: `upgrade_proposal` table via `SqlRunner`.
+    Demo target: public repo anuramesh1/depguard-demo-app (intentionally vulnerable pom). Token: fine-grained PAT, that repo only.
+  - Secrets: SSM Parameter Store SecureString under `/depguard/` (free; chosen over Secrets Manager on cost), written by
+    deploy.sh via stdin JSON, loaded by `SsmParametersPostProcessor` (EnvironmentPostProcessor, `DEPGUARD_SSM_PATH`).
+    Terraform gets only `secrets_version` so new secrets roll the Lambda. teardown.sh deletes them.
+  - `monitoring.tf`: 4 alarms → SNS email (`ALERT_EMAIL`), AWS Budget ($25, 80% actual / 100% forecast), reserved concurrency 5.
+  - Scripts: `users.sh add|remove|list`, `token.sh <user>` (passwords via no-echo prompt or `DEPGUARD_PASSWORD`).
+- **Tests:** 91 (`./mvnw test`), all pass; the Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
 - **Bedrock access (2026-11-21):** Claude **Haiku 4.5**, **Sonnet 4.5**, Opus 4.1, Nova family, Pixtral Large, Writer Palmyra; earlier only (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) and Titan Text Embeddings v2.
   Haiku 5.5 and Sonnet 5.5 return AccessDenied ("not available for this account"). The model is configurable (`model_id` in Terraform).
-- **Deploy:** never applied. Lambda zip ~45 MB, uploaded through S3. The account has no default VPC in us-east-1 (hence aurora.tf's own VPC).
+- **Deploy:** first applied 2026-11-22 (39 resources; Aurora took ~7 min). Fixes found on the first deploy: Boot's disk-space health check is always DOWN on Lambda (disabled); SecurityConfig must be `@ConditionalOnWebApplication` (ingest runs without a web server); GitHub URLs must be built from path segments (`{repo}` with a "/" became %2F → 404). The AWS CLI can't read `file:///dev/stdin` on macOS: scripts pass secret JSON through a private temp file (`aws_json`). The owner's AWS CLI uses access keys, not SSO. Lambda zip ~45 MB, uploaded through S3. The account has no default VPC in us-east-1 (hence aurora.tf's own VPC).
 - Public repo: https://github.com/anuramesh1/depguard. Phases 1–7 and the upgrade pushed (2026-11-20/21).
   The owner wants **no Claude co-author or attribution lines** in commits. Note: the old `CLAUDE.md` wording with job references is still in `b6cdc00`'s history.
 - Local dev: `.env` (gitignored) holds a random POSTGRES_PASSWORD; `docker compose up -d postgres`. Docker Desktop may start minimised to the menu bar.
 - Local JDK for this machine: `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home` (no JDK on the default PATH).
 
 ## Next steps
-1. Optionally deploy (`scripts/deploy.sh`, then `scripts/ingest.sh aws`) and try `/api/triage` on Lambda with the key.
-   Verify SnapStart + Bedrock credentials after restore, Aurora resume behaviour, and that a triage finishes inside API Gateway's 30 s.
-2. **Phase 8: security and production hardening** — Spring Security (JWT, roles), human-approved upgrade PRs on GitHub,
-   Secrets Manager for Langfuse keys, the production checklist in the README.
+1. Verified on Lambda (2026-11-22): 401 without/forged token, VIEWER 403 on approve, four-eyes 409, PR opened on the demo
+   repo (only `<version>` lines changed), triage 9 s / ~$0.015 with 7 guide sources, cache repeat 24 ms, Langfuse trace with
+   20 observations (keys from SSM; Lambda env holds no secrets), 4 alarms OK, reserved concurrency 5.
+   The account-wide budget was already over $10 from other projects on first deploy, so it was raised to $25 (variable `monthly_budget_usd`).
+2. All 8 phases are built. Further ideas are in the README's production checklist.
 
 ## Running in IntelliJ
 - Open the `depguard` folder; IntelliJ imports the Maven project from `pom.xml`.
 - Run `dev.depguard.DepGuardApplication` (port 8080).
-- `samples/scans.http` sends the sample poms from IntelliJ's HTTP client (click the green arrows). Triage and knowledge search need AWS credentials (e.g. `aws sso login`); search also needs `docker compose up -d postgres` and an ingest.
+- `samples/scans.http` sends the sample poms from IntelliJ's HTTP client (click the green arrows). Triage and knowledge search need AWS credentials (`aws configure` or `aws sso login`); search also needs `docker compose up -d postgres` and an ingest.
 - `.idea/` is gitignored.
 
 ## Project rules

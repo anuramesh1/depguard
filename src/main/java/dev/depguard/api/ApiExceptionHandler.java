@@ -2,6 +2,7 @@ package dev.depguard.api;
 
 import dev.depguard.dependency.PomParseException;
 import dev.depguard.osv.OsvUnavailableException;
+import dev.depguard.upgrade.UpgradeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -47,6 +48,24 @@ public class ApiExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.SERVICE_UNAVAILABLE, "The knowledge base is unavailable right now. Try again shortly.");
         problem.setTitle("Knowledge base unavailable");
+        return problem;
+    }
+
+    /** Upgrade-proposal rules and states (four eyes, already decided, pom changed...): the message is safe to show. */
+    @ExceptionHandler(UpgradeService.UpgradeException.class)
+    ProblemDetail upgradeRule(UpgradeService.UpgradeException e) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.valueOf(e.status()), e.getMessage());
+        problem.setTitle("Upgrade not possible");
+        return problem;
+    }
+
+    /** GitHub API errors (bad token, missing repo): details only in the logs. */
+    @ExceptionHandler(org.springframework.web.client.RestClientResponseException.class)
+    ProblemDetail gitHubFailed(org.springframework.web.client.RestClientResponseException e) {
+        log.warn("GitHub call failed: HTTP {}", e.getStatusCode());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY,
+                "GitHub rejected the request. Check the repository and token configuration.");
+        problem.setTitle("GitHub unavailable");
         return problem;
     }
 

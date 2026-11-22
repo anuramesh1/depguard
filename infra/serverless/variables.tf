@@ -40,19 +40,6 @@ variable "langfuse_host" {
   default     = "https://cloud.langfuse.com"
 }
 
-variable "langfuse_public_key" {
-  description = "Langfuse project public key. Empty = no tracing. scripts/deploy.sh passes it from .env."
-  type        = string
-  default     = ""
-}
-
-variable "langfuse_secret_key" {
-  description = "Langfuse project secret key. Passed from .env by scripts/deploy.sh; never put it in a .tf file."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 variable "memory_mb" {
   description = "Lambda memory. Lambda gives CPU in proportion to memory; 1024 MB suits Spring Boot."
   type        = number
@@ -69,4 +56,34 @@ variable "throttle_burst" {
   description = "Short burst of requests API Gateway allows above the steady rate."
   type        = number
   default     = 10
+}
+
+variable "github_repository" {
+  description = "owner/name of the repository DepGuard opens upgrade pull requests on."
+  type        = string
+  default     = "anuramesh1/depguard-demo-app"
+}
+
+variable "secrets_version" {
+  description = "SSM parameter versions (set by scripts/deploy.sh): changing a secret publishes a new Lambda version."
+  type        = string
+  default     = "none"
+}
+
+variable "max_concurrency" {
+  description = "Most Lambdas that may run at once (reserved concurrency): a hard cost ceiling."
+  type        = number
+  default     = 5
+}
+
+variable "alert_email" {
+  description = "Where alarms and budget alerts go (ALERT_EMAIL in .env). Empty: no email, no budget."
+  type        = string
+  default     = ""
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost (whole account) above which the budget alert emails you."
+  type        = number
+  default     = 25
 }

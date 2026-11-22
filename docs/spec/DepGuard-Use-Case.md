@@ -32,14 +32,14 @@ for example that spring-web 5 → 6 also needs Java 17+ and the `javax` → `jak
 | **Memory** | Each project's scan history ("what changed since last week?") |
 | **Retries** | Backoff on the NVD rate limit; fall back to OSV if NVD is down |
 | **Guardrails** | Never state a CVE that no tool returned (citation check); refuse off-topic questions; treat advisory text as data, not instructions |
-| **Human approval** | "Open a GitHub PR with the upgrade" waits for a person to approve it |
+| **Human approval** | An upgrade proposal opens a GitHub pull request only after a *different* MAINTAINER approves it (four-eyes); DepGuard never merges |
 | **RAG** | Hybrid search over every OSV Maven advisory and official migration guides: pgvector + Postgres full-text + Reciprocal Rank Fusion, in one SQL query |
 | **Caching** | Answer cache in pgvector (exact + similar question, 6 h TTL, versioned key); KEV feed cached 6 h; Bedrock prompt caching measured and not worth it after the workflow change |
 | **Batching** | One OSV batch query per pom; an ingest run that embeds new or changed advisories in bulk (content hashes skip the rest) |
 | **Model routing** | Evaluated in phase 7 and rejected: no cheaper model passed every safety gate on simple poms; code does the work a small model would have done |
 | **Model selection** | `ModelBenchmark` runs the golden set on 8 Bedrock models: gates, tracked checks, judge scores, p50/p95 latency, cost per triage, errors |
 | **Observability** | Spring AI Micrometer observations → OpenTelemetry spans → Langfuse: one trace per triage with model calls (prompt, tokens, cost), tool calls, retrieval and guardrail warnings; eval scores attached |
-| **Security** | JWT auth with roles: `VIEWER` can scan, `MAINTAINER` can approve upgrade PRs |
+| **Security** | Cognito logins checked twice (API Gateway JWT authorizer, then Spring Security): `VIEWER` can triage and propose, `MAINTAINER` can approve upgrade PRs; secrets in SSM Parameter Store; alarms, a budget and a concurrency cap |
 | **Data** | Aurora Serverless v2 (Postgres + pgvector) through the RDS Data API |
 | **Cloud** | API Gateway + Lambda (Java 21, SnapStart) via Terraform; about $0 while idle |
 
@@ -76,15 +76,16 @@ Each phase ends with something that can be demoed.
 | 5 | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability | ✅ Done |
 | 6 | Facts in code (workflow + agent), no-model route, answer cache; prompt caching measured and dropped: −59% cost, −47% latency, quality up | Cost and performance | ✅ Done |
 | 7 | 8-model benchmark (quality, latency, cost, risk); Haiku 4.5 kept, routing rejected by data | Model selection | ✅ Done |
-| 8 | Spring Security, human-approved upgrade PRs, production hardening | Security, guardrails | ⏭️ Next |
+| 8 | Cognito + Spring Security roles, four-eyes upgrade PRs on GitHub, Parameter Store secrets, alarms, budget, concurrency cap | Security, guardrails, cloud | ✅ Done |
 
 ## Decisions
 
 - **Spring AI over LangChain4j.** It is Spring-native, and its built-in Micrometer observability makes the Langfuse phase simpler. LangChain4j is a good alternative.
-- **Amazon Bedrock for models.** On Lambda the function's IAM role calls Bedrock, so there is no API key to store. Claude Haiku handles tool calling; Sonnet is added for routing in phase 6.
+- **Amazon Bedrock for models.** On Lambda the function's IAM role calls Bedrock, so there is no API key to store. Claude Haiku 4.5 writes the triage; routing to other models was measured in phase 7 and rejected.
 - **Spring Boot 4.1 with Spring AI 2.1.** The project started on Boot 3.5, which stopped receiving free security patches on 30 June 2026. For a tool that flags outdated dependencies, staying on a supported line matters, so it moved to Boot 4.1 (free support until July 2027).
 - **Own hybrid-search SQL instead of Spring AI's PgVectorStore.** On AWS the app reaches Aurora through the RDS Data API (HTTPS + IAM), which keeps the Lambda out of a VPC and avoids a NAT gateway; PgVectorStore needs JDBC. Writing the query by hand also keeps vector search, full-text search and Reciprocal Rank Fusion visible in one place.
 - **Serverless on AWS.** Lambda with SnapStart and API Gateway costs about $0 while idle. Fargate is documented as an alternative for steady traffic or long requests.
+- **Free-tier hardening.** Parameter Store instead of Secrets Manager, Cognito Lite, the free CloudWatch alarms and AWS Budgets: production-shaped controls for $0 at demo scale.
 - **Alternative domain, not chosen:** the openFDA drug-label and adverse-event APIs are also live and open, but their answers are harder to check objectively.
 
 ## Highlights so far
@@ -100,3 +101,5 @@ Each phase ends with something that can be demoed.
 7. **Model choice by evidence.** Eight models on the same golden set: only Claude passed every gate; cheaper models
    failed the prompt-injection case. The benchmark also exposed an advisory-only tool budget, now a hard limit.
 8. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.
+9. **A human stays in charge of changes.** DepGuard proposes version bumps with a diff and reasons; a second person with
+   the MAINTAINER role approves before a pull request opens, and only `<version>` text is ever edited.

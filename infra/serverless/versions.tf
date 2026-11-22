@@ -6,10 +6,6 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.73"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.7"
-    }
   }
 
   # Local state on purpose: a one-person demo. For production, use a remote backend

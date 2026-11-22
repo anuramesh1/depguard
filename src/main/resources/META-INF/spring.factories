@@ -1,0 +1,3 @@
+# Reads secrets from SSM Parameter Store at startup when DEPGUARD_SSM_PATH is set (see SsmParametersPostProcessor).
+org.springframework.boot.EnvironmentPostProcessor=\
+dev.depguard.security.SsmParametersPostProcessor

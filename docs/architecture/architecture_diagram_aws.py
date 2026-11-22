@@ -1,7 +1,7 @@
 """Render DepGuard's AWS architecture diagram with service icons (depguard-architecture-aws.svg/.png).
 
 Same drawing style as the payroll-ai-strands and RAG_Hybrid_Search diagrams.
-Three stories: scanning and triaging a pom.xml (with the RAG knowledge base), deploying, and what later phases add.
+Three stories: scanning and triaging a pom.xml (with the RAG knowledge base), deploying, and the security and guardrail layer.
 
     python3 docs/architecture/architecture_diagram_aws.py    # the PNG needs rsvg-convert (brew install librsvg)
 
@@ -101,7 +101,7 @@ panel(30, 110, 1540, 590, "①  Scanning and triaging a pom.xml  —  a scan ~2 
 icon("users", 85, 320, ["Developer", "curl · IntelliJ"], size=72)
 arrow("M125 310 L 247 310", BLUE, "pom.xml", (186, 298))
 arrow("M247 332 L 125 332", BLUE, "report", (186, 352))
-icon("api-gateway", 285, 320, ["Amazon API Gateway", "HTTP API · HTTPS", "throttled 5 req/s"], size=60)
+icon("api-gateway", 285, 320, ["Amazon API Gateway", "HTTP API · HTTPS", "throttled 5 req/s", "JWT authorizer"], size=60)
 arrow("M320 320 L 376 320", BLUE)
 
 # Lambda: Spring Boot runs inside, unchanged
@@ -114,7 +114,7 @@ image("spring", 1128, 164, 36)
 # Row 1: request handling and the deterministic scan
 step(400, 232, 240, 80, "StreamLambdaHandler", ["API Gateway event →", "servlet request"], ORANGE, "#FFFFFF")
 arrow("M640 272 L 666 272", ORANGE)
-step(670, 232, 240, 80, "Controllers", ["POST /api/scans", "POST /api/triage (API key)"], ORANGE, "#FFFFFF")
+step(670, 232, 240, 80, "Controllers", ["POST /api/scans", "/api/triage · /api/upgrades"], ORANGE, "#FFFFFF")
 arrow("M910 272 L 936 272", ORANGE)
 step(940, 232, 220, 80, "ScanService", ["parses the pom (no XXE),", "ranks, picks upgrades"], ORANGE, "#FFFFFF")
 
@@ -169,17 +169,19 @@ icon("terraform", 320, 815, ["Terraform", "zip → S3 → Lambda"], size=50, lab
 arrow("M370 815 L 446 815", GREY)
 icon("lambda", 500, 815, ["New Lambda version", "SnapStart snapshot"], size=50, label_size=14)
 arrow("M555 815 L 596 815", GREY)
-step(600, 780, 170, 72, "Health check", ["GET /actuator/health", "prints URL + key cmd"], GREY, "#FFFFFF")
+step(600, 780, 170, 72, "Health check", ["GET /actuator/health", "secrets → SSM first"], GREY, "#FFFFFF")
 text(50, 900, "Then once (and to refresh): scripts/ingest.sh aws  —  OSV export + migration guides → Titan embeddings → Aurora",
      size=13.5, color=GREY, anchor="start")
 text(50, 918, "Quality: ./mvnw test -Pevals  —  golden sets, code checks + an Amazon Nova Pro judge",
      size=13.5, color=GREY, anchor="start")
 
-# ------------------------------------------------------------------ story 3: later phases
-panel(810, 720, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
-badge(940, 805, "8", ["Secrets Manager, alarms", "phase 8 · production hardening"], PURPLE, "#F3F0FF")
-badge(1190, 805, "8", ["Human-approved upgrade PRs", "phase 8 · GitHub"], PURPLE, "#F3F0FF")
-icon("springsecurity", 1440, 815, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
+# ------------------------------------------------------------------ story 3: security and guardrails
+panel(810, 720, 760, 210, "③  Security and guardrails  —  all free at demo scale", "#FBFAFF", PURPLE)
+badge(885, 800, "JWT", ["Amazon Cognito", "login → token", "2 roles (groups)"], PURPLE, "#F3F0FF", r=30)
+icon("springsecurity", 1030, 800, ["Spring Security", "JWT checked again", "+ roles in the app"], size=46, label_size=13)
+badge(1180, 800, "PR", ["Upgrade PRs", "four-eyes approval", "→ GitHub (demo repo)"], PURPLE, "#F3F0FF", r=30)
+badge(1330, 800, "SSM", ["Parameter Store", "secrets, encrypted", "read at startup"], PURPLE, "#F3F0FF", r=30)
+badge(1480, 800, "!", ["Alarms + budget", "5xx · errors · p95", "email · 5 Lambdas max"], PURPLE, "#F3F0FF", r=30)
 
 # ------------------------------------------------------------------ write
 markers = "".join(

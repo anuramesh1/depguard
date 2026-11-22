@@ -136,23 +136,23 @@
   <text x="872" y="579" font-size="13" font-weight="700" fill="#0f172a" text-anchor="middle">Local: ./mvnw spring-boot:run</text>
   <text x="872" y="596" font-size="11" fill="#475569" text-anchor="middle">Tomcat :8080 · Postgres + pgvector in Docker</text>
 
-  <!-- ============ Later phases ============ -->
-  <text x="20" y="642" font-size="13" font-weight="700" fill="#0f172a">Coming in later phases</text>
+  <!-- ============ Security and guardrails ============ -->
+  <text x="20" y="642" font-size="13" font-weight="700" fill="#0f172a">Security and guardrails (free at demo scale)</text>
   <text x="1005" y="642" font-size="11" fill="#475569" text-anchor="end">Evals: ./mvnw test -Pevals · model benchmark: -Dtest=ModelBenchmark</text>
-  <g fill="#ffffff" stroke="#94a3b8" stroke-dasharray="5 4">
+  <g fill="#f3f0ff" stroke="#7c3aed">
     <rect x="20" y="652" width="235" height="48" rx="8"/>
     <rect x="275" y="652" width="235" height="48" rx="8"/>
     <rect x="530" y="652" width="235" height="48" rx="8"/>
     <rect x="785" y="652" width="220" height="48" rx="8"/>
   </g>
-  <g font-size="12" fill="#64748b" text-anchor="middle">
-    <text x="137" y="672" font-weight="700">Secrets Manager · phase 8</text>
-    <text x="137" y="689" font-size="11">Langfuse keys out of env vars</text>
-    <text x="392" y="672" font-weight="700">Alarms and budgets · phase 8</text>
-    <text x="392" y="689" font-size="11">5xx, latency, cost alerts</text>
-    <text x="647" y="672" font-weight="700">Upgrade PRs · phase 8</text>
-    <text x="647" y="689" font-size="11">human-approved, on GitHub</text>
-    <text x="895" y="672" font-weight="700">Spring Security · phase 8</text>
-    <text x="895" y="689" font-size="11">JWT authorizer, roles</text>
+  <g font-size="12" fill="#0f172a" text-anchor="middle">
+    <text x="137" y="672" font-weight="700">SSM Parameter Store</text>
+    <text x="137" y="689" font-size="11">secrets read at startup</text>
+    <text x="392" y="672" font-weight="700">Alarms + budget</text>
+    <text x="392" y="689" font-size="11">5xx, p95, throttles; 5 Lambdas max</text>
+    <text x="647" y="672" font-weight="700">Upgrade PRs → GitHub</text>
+    <text x="647" y="689" font-size="11">four-eyes MAINTAINER approval</text>
+    <text x="895" y="672" font-weight="700">Cognito + Spring Security</text>
+    <text x="895" y="689" font-size="11">JWT at gateway and app; roles</text>
   </g>
 </svg>

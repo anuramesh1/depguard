@@ -25,7 +25,7 @@ fail() { printf '\033[31mError: %s\033[0m\n' "$*" >&2; exit 1; }
 [[ "$TARGET" == "local" || "$TARGET" == "aws" ]] || fail "Usage: scripts/ingest.sh local|aws [max-advisories]"
 [[ "$MAX" =~ ^[0-9]+$ ]] || fail "max-advisories must be a number"
 aws sts get-caller-identity >/dev/null 2>&1 \
-  || fail "No AWS credentials (needed for Bedrock embeddings). Run 'aws sso login' or set AWS_PROFILE."
+  || fail "No AWS credentials (needed for Bedrock embeddings). Run 'aws configure' (access keys) or 'aws sso login' (SSO), or set AWS_PROFILE."
 
 if [[ "$TARGET" == "local" ]]; then
   export DEPGUARD_RAG_STORE=jdbc
@@ -49,8 +49,12 @@ step "Ingesting into $TARGET (advisories: ${MAX/#0/all})"
 # The "ingest" profile runs IngestCommand once, without a web server, and exits.
 (cd "$ROOT" && java -jar "$JAR" --spring.profiles.active=ingest --depguard.rag.ingest.max-advisories="$MAX")
 
-cat <<EOF
-
-Done. Try a search (shows semantic rank, keyword rank and the fused RRF score):
-  curl -s 'localhost:8080/api/knowledge/search?q=Text4Shell+StringSubstitutor'
-EOF
+echo
+echo "Done. Try a search (shows semantic rank, keyword rank and the fused RRF score):"
+if [[ "$TARGET" == "local" ]]; then
+  echo "  curl -s 'localhost:8080/api/knowledge/search?q=Text4Shell+StringSubstitutor'"
+else
+  # On AWS the search needs a login (phase 8).
+  echo "  TOKEN=\$(scripts/token.sh alice)"
+  echo "  curl -s -H \"Authorization: Bearer \$TOKEN\" '$(terraform -chdir="$ROOT/infra/serverless" output -raw url)/api/knowledge/search?q=Text4Shell+StringSubstitutor'"
+fi
