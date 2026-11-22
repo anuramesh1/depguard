@@ -83,11 +83,17 @@ This is a public repo: keep personal notes and context out of committed files. T
   and removed (Haiku 4.5 min 4,096 tokens; first call ~2.2k); cost accounting includes cached tokens. `OsvClient` caps 16
   concurrent requests (OSV "too many concurrent streams"). Final eval: all checks 100%, judge 4.94/5/5/5, $0.0047/triage
   (was $0.0116), p50 2.6 s (was 4.9 s). Old VulnerabilityTools/ExploitTools removed.
-- **Tests:** 80 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
-- **Bedrock access:** this account can use Claude **Haiku 4.5** (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) and Titan Text Embeddings v2.
+- **Phase 7 done (2026-11-21):** `evals/ModelBenchmark` (run with `-Dtest=ModelBenchmark`; not part of `-Pevals`): 8 models,
+  same facts/prompts/checks, Nova Pro judge only (owner's cost choice; Nova scores flagged self-graded). Only Claude Haiku 4.5 and
+  Sonnet 4.5 pass all gates; Nova models fail the prompt-injection case (stop triaging). Decision: keep Haiku 4.5, no routing.
+  Hard tool cap via `spring.ai.tools.limits` (4 calls, throw) + facts-only fallback in TriageAgent (also for Bedrock SdkException).
+  Price table in application.yml from the AWS Price List API; `us.` Claude = +10% vs `global.` (earlier costs ~10% low).
+  Llama 4 Scout partly "Legacy, not activated"; Pixtral Large throttled (low quota). Account can now call Claude Sonnet 4.5.
+- **Tests:** 81 (`./mvnw test`), all pass; the 3 Testcontainers ones need Docker running. No network or AWS needed; the agent tests use a fake `ChatModel`.
+- **Bedrock access (2026-11-21):** Claude **Haiku 4.5**, **Sonnet 4.5**, Opus 4.1, Nova family, Pixtral Large, Writer Palmyra; earlier only (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) and Titan Text Embeddings v2.
   Haiku 5.5 and Sonnet 5.5 return AccessDenied ("not available for this account"). The model is configurable (`model_id` in Terraform).
 - **Deploy:** never applied. Lambda zip ~45 MB, uploaded through S3. The account has no default VPC in us-east-1 (hence aurora.tf's own VPC).
-- Public repo: https://github.com/anuramesh1/depguard. Phases 1–6 and the upgrade pushed (2026-11-20/21).
+- Public repo: https://github.com/anuramesh1/depguard. Phases 1–7 and the upgrade pushed (2026-11-20/21).
   The owner wants **no Claude co-author or attribution lines** in commits. Note: the old `CLAUDE.md` wording with job references is still in `b6cdc00`'s history.
 - Local dev: `.env` (gitignored) holds a random POSTGRES_PASSWORD; `docker compose up -d postgres`. Docker Desktop may start minimised to the menu bar.
 - Local JDK for this machine: `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home` (no JDK on the default PATH).
@@ -95,8 +101,8 @@ This is a public repo: keep personal notes and context out of committed files. T
 ## Next steps
 1. Optionally deploy (`scripts/deploy.sh`, then `scripts/ingest.sh aws`) and try `/api/triage` on Lambda with the key.
    Verify SnapStart + Bedrock credentials after restore, Aurora resume behaviour, and that a triage finishes inside API Gateway's 30 s.
-2. **Phase 7: model benchmark + routing** — run both eval suites per model (Haiku 4.5, Nova Pro/Lite, Opus 4.1 where it
-   makes sense): quality vs latency vs cost; route easy poms to a cheaper model only where evals hold.
+2. **Phase 8: security and production hardening** — Spring Security (JWT, roles), human-approved upgrade PRs on GitHub,
+   Secrets Manager for Langfuse keys, the production checklist in the README.
 
 ## Running in IntelliJ
 - Open the `depguard` folder; IntelliJ imports the Maven project from `pom.xml`.

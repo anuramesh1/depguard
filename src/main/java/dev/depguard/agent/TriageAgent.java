@@ -11,11 +11,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.model.tool.ToolCallLimitExceededException;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.exception.SdkException;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -39,6 +43,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class TriageAgent {
 
+    private static final Logger log = LoggerFactory.getLogger(TriageAgent.class);
     static final String DEFAULT_QUESTION = "Which dependencies should I upgrade first, and why?";
     /** Reported as the model when the answer needed no model call. */
     static final String NO_MODEL = "none (no vulnerable dependencies)";
@@ -147,7 +152,16 @@ public class TriageAgent {
             // No prompt caching, by measurement (phase 6): Haiku 4.5 caches only prompts of 4,096+ tokens. The first
             // call here is ~2,200 tokens, and the second (~5,200) is the last, so nothing would ever be read back.
             // Caching pays when a long prefix is re-sent; the workflow removed exactly those re-sends.
-            ChatResponse response = request.call().chatResponse();
+            ChatResponse response;
+            try {
+                response = request.call().chatResponse();
+            } catch (ToolCallLimitExceededException | SdkException e) {
+                // The model looped on tool calls past the hard limit, or Bedrock failed: the facts are still known,
+                // so answer from them rather than fail. (Phase 7: Nova Lite made 40 searches in one triage.)
+                log.warn("Model answer unavailable, answering from facts: {}", e.getMessage());
+                step.warning("Facts-only answer: " + e.getClass().getSimpleName());
+                return answerWithoutModel(step, factsOnly(facts, pom), pom, start, "facts-only");
+            }
 
             String answer = withUncheckedLine(response == null || response.getResult() == null
                     ? ""
@@ -222,10 +236,38 @@ public class TriageAgent {
 
     /** Route for answers code can write by itself: no tokens spent, nothing to verify. */
     private TriageResult answerWithoutModel(AiTracing.Step step, String answer, ParsedPom pom, long start) {
+        return answerWithoutModel(step, answer, pom, start, "no-model");
+    }
+
+    private TriageResult answerWithoutModel(AiTracing.Step step, String answer, ParsedPom pom, long start, String route) {
         step.output(answer);
-        step.metadata("route", "no-model");
+        step.metadata("route", route);
         return new TriageResult(answer, List.of(), List.of(), List.of(), List.of(), pom.skipped(), NO_MODEL,
                 0, 0, 0L, 0L, elapsedMs(start), step.traceId(), null);
+    }
+
+    /**
+     * The fallback when the model can't answer: the ranked facts as a plain list. Less explanation, but every
+     * vulnerable dependency, in the right order, with its fix, known exploitation and exploit probability.
+     */
+    static String factsOnly(TriageFacts facts, ParsedPom pom) {
+        StringBuilder answer = new StringBuilder("## Upgrade first\n");
+        for (TriageFacts.VulnerableDependency d : facts.vulnerable()) {
+            answer.append(d.rank()).append(". ").append(d.dependency()).append(" → ")
+                    .append(d.recommendedVersion() == null ? "no fixed version yet" : d.recommendedVersion())
+                    .append(": ").append(d.worstSeverity()).append(", ").append(d.advisoryCount()).append(" advisories");
+            if (d.knownExploited()) {
+                answer.append(", known exploited (CISA KEV)");
+            }
+            if (d.maxEpss() != null) {
+                answer.append(String.format(java.util.Locale.ROOT, ", EPSS up to %.2f%%", d.maxEpss() * 100));
+            }
+            answer.append(". CVEs: ").append(d.topAdvisories().stream().flatMap(a -> a.cves().stream())
+                    .map(TriageFacts.Cve::id).distinct().collect(Collectors.joining(", "))).append('\n');
+        }
+        answer.append("\n## Can wait\nNothing else.\n\n_The AI explanation is unavailable right now; this is DepGuard's ranked "
+                + "list from OSV, EPSS and CISA KEV._\n");
+        return withUncheckedLine(answer.toString(), pom);
     }
 
     /** Same sections as a model answer, so clients and evals read both the same way. */

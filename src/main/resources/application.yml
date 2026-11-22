@@ -33,6 +33,13 @@ spring:
             model: us.anthropic.claude-haiku-4-5-20251001-v1:0
             temperature: 0.2   # low: triage should be consistent, not creative
             max-tokens: 1500   # caps the cost of one answer
+    tools:
+      limits:
+        # Hard cap on tool calls per triage, enforced by Spring AI (the prompt allows 2 searches). Before phase 7 the
+        # only limit was advisory, and a model (Nova Lite) ignored it: 40 searches, 820k input tokens in one triage.
+        max-total-tool-calls: 4
+        max-calls-per-tool-default: 4
+        on-limit-exceeded: throw   # TriageAgent then answers from the facts alone
     model:
       embedding: bedrock-titan # Spring AI's Bedrock starter has two embedding models; use Titan
 
@@ -63,16 +70,39 @@ depguard:
     ttl: 6h                      # exploit data changes daily; DepGuard caches KEV for 6 h too
     similarity-threshold: 0.55   # measured: 3/6 paraphrases match, 0/7 different questions (see AnswerCacheProperties)
   pricing:
-    # USD per million tokens (us-east-1 on-demand; check current Bedrock prices). Puts a cost on every model call.
+    # USD per million tokens, us-east-1 on-demand, from the AWS Price List API (2026-11-21). Used for the cost on every
+    # model-call span and in the evals. Note: Claude through a "us." (geographic) inference profile costs 10% more than
+    # through "global." (Haiku 4.5: $1.10/$5.50 vs $1.00/$5.00); "global." may process requests in any region.
     models:
       - model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+        input-per-million: 1.10
+        output-per-million: 5.50
+        cache-read-per-million: 0.11   # prompt cache: reads at 0.1x input
+        cache-write-per-million: 1.375 # writes at 1.25x input (5-minute TTL)
+      - model: global.anthropic.claude-haiku-4-5-20251001-v1:0
         input-per-million: 1.00
         output-per-million: 5.00
-        cache-read-per-million: 0.10   # prompt cache: reads at 0.1x input
-        cache-write-per-million: 1.25  # writes at 1.25x input (5-minute TTL)
+      - model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+        input-per-million: 3.30
+        output-per-million: 16.50
       - model: us.amazon.nova-pro-v1:0
         input-per-million: 0.80
         output-per-million: 3.20
+      - model: us.amazon.nova-2-lite-v1:0
+        input-per-million: 0.33
+        output-per-million: 2.75
+      - model: us.amazon.nova-lite-v1:0
+        input-per-million: 0.06
+        output-per-million: 0.24
+      - model: us.amazon.nova-micro-v1:0
+        input-per-million: 0.035
+        output-per-million: 0.14
+      - model: us.meta.llama4-scout-17b-instruct-v1:0
+        input-per-million: 0.17
+        output-per-million: 0.66
+      - model: us.mistral.pixtral-large-2502-v1:0
+        input-per-million: 2.00
+        output-per-million: 6.00
   rag:
     # "jdbc" = local docker-compose Postgres; "data-api" = Aurora on AWS (Terraform sets this on Lambda)
     store: ${DEPGUARD_RAG_STORE:jdbc}

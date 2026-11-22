@@ -10,6 +10,7 @@ import dev.depguard.evals.GoldenSet.TriageCase;
 import dev.depguard.evals.TriageOracle.Expected;
 import dev.depguard.observability.AiTracing;
 import dev.depguard.observability.LangfuseProperties;
+import dev.depguard.observability.ModelPricing;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -22,10 +23,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -64,7 +61,6 @@ import tools.jackson.databind.json.JsonMapper;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = "depguard.answer-cache.enabled=false")
 class TriageEval {
 
-    private static final int PARALLEL = 4; // concurrent triages: fast, and well within Bedrock's rate limits
     private static final JsonMapper JSON = JsonMapper.builder()
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .build();
@@ -74,6 +70,7 @@ class TriageEval {
     @Autowired TriageFactsService factsService;
     @Autowired ChatModel chatModel;
     @Autowired LangfuseProperties langfuse;
+    @Autowired ModelPricing pricing;
 
     @Test
     void triageGoldenSet() throws Exception {
@@ -106,7 +103,7 @@ class TriageEval {
             for (TriageCase c : cases) {
                 for (int repeat = 1; repeat <= repeats; repeat++) {
                     int r = repeat;
-                    tasks.add(() -> grade(c, r, expected.get(c.id()), triageInSession(c, evalRunId), judge));
+                    tasks.add(() -> EvalRunner.grade(c, r, expected.get(c.id()), triageInSession(c, evalRunId), judge, pricing));
                 }
             }
         } else {
@@ -114,13 +111,13 @@ class TriageEval {
             for (TriageScorecard.Run saved : loadRuns(Path.of(replayFile))) {
                 TriageCase c = byId.get(saved.caseId());
                 if (c != null) {
-                    tasks.add(() -> grade(c, saved.repeat(), expected.get(c.id()), asResult(saved), judge));
+                    tasks.add(() -> EvalRunner.grade(c, saved.repeat(), expected.get(c.id()), asResult(saved), judge, pricing));
                 }
             }
             assertThat(tasks).as("saved runs matching the selected cases in " + replayFile).isNotEmpty();
         }
 
-        TriageScorecard scorecard = new TriageScorecard(runAll(tasks), !replayFile.isBlank());
+        TriageScorecard scorecard = new TriageScorecard(EvalRunner.runAll(tasks), !replayFile.isBlank());
         if (langfuse.enabled() && replayFile.isBlank()) {
             LangfuseScores scores = new LangfuseScores(langfuse);
             int sent = scorecard.runs().stream().mapToInt(run -> scores.send(run, evalRunId)).sum();
@@ -142,51 +139,12 @@ class TriageEval {
         return AiTracing.inSession(evalRunId, () -> agent.triage(c.pomXml(), c.question()));
     }
 
-    /** Runs the tasks in parallel (bounded), keeping their results. */
-    private static List<TriageScorecard.Run> runAll(List<Callable<TriageScorecard.Run>> tasks) throws Exception {
-        Semaphore slots = new Semaphore(PARALLEL);
-        List<Future<TriageScorecard.Run>> futures = new ArrayList<>();
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (Callable<TriageScorecard.Run> task : tasks) {
-                futures.add(executor.submit(() -> {
-                    slots.acquire();
-                    try {
-                        return task.call();
-                    } finally {
-                        slots.release();
-                    }
-                }));
-            }
-            List<TriageScorecard.Run> runs = new ArrayList<>();
-            for (Future<TriageScorecard.Run> f : futures) {
-                runs.add(f.get());
-            }
-            return runs;
-        }
-    }
-
-    /** Grades one answer: the same code for live and replayed answers, so replay measures exactly what a live run would. */
-    private static TriageScorecard.Run grade(TriageCase c, int repeat, Expected expected, TriageResult result,
-                                             TriageJudge judge) {
-        List<TriageChecks.Check> checks = TriageChecks.run(c, expected, result);
-        TriageJudge.Judgement judgement = judge == null ? null : judgeSafely(judge, c, expected, result);
-        return new TriageScorecard.Run(c.id(), repeat, result.durationMs(),
-                result.inputTokens() == null ? 0 : result.inputTokens(),
-                result.outputTokens() == null ? 0 : result.outputTokens(),
-                result.toolCalls().size(), checks,
-                judgement == null ? null : judgement.verdict(),
-                judgement == null ? 0 : judgement.inputTokens(),
-                judgement == null ? 0 : judgement.outputTokens(),
-                result.answer(), result.unverifiedCves(), result.traceId(),
-                result.cacheReadInputTokens() == null ? 0 : result.cacheReadInputTokens(),
-                result.cacheWriteInputTokens() == null ? 0 : result.cacheWriteInputTokens());
-    }
-
     /** A saved run as a TriageResult, so the checks can't tell it from a live one. */
     private static TriageResult asResult(TriageScorecard.Run saved) {
         return new TriageResult(saved.answer(), List.of(),
                 saved.unverifiedCves() == null ? List.of() : saved.unverifiedCves(),
-                Collections.nCopies(saved.toolCalls(), "(replayed)"), List.of(), List.of(), "replayed",
+                Collections.nCopies(saved.toolCalls(), "(replayed)"), List.of(), List.of(),
+                saved.model() == null ? "replayed" : saved.model(),
                 saved.inputTokens(), saved.outputTokens(), saved.cacheReadTokens(), saved.cacheWriteTokens(),
                 saved.durationMs(), saved.traceId(), null);
     }
@@ -196,13 +154,4 @@ class TriageEval {
         return JSON.readValue(Files.readString(file), new TypeReference<List<TriageScorecard.Run>>() { });
     }
 
-    /** A judge that fails to answer (e.g. invalid JSON) shouldn't sink the whole run: record no verdict. */
-    private static TriageJudge.Judgement judgeSafely(TriageJudge judge, TriageCase c, Expected expected, TriageResult result) {
-        try {
-            return judge.judge(c, expected, result);
-        } catch (RuntimeException e) {
-            System.err.println("Judge failed for " + c.id() + ": " + e.getMessage());
-            return null;
-        }
-    }
 }

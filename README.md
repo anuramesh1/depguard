@@ -5,11 +5,11 @@ Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and wha
 
 Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
-> **Status: phases 1–6 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
+> **Status: phases 1–7 of 8.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
 > knowledge base of every OSV Maven advisory plus official migration guides, quality evals (golden sets graded by
 > code checks and an LLM judge), LLM tracing to Langfuse, and measured cost/latency work: a triage now costs ~$0.005 and
-> takes ~2.6 s (was $0.012 and 4.9 s), repeats come from an answer cache in ~10 ms. 80 tests (7 need Docker), plus 2 eval
-> suites run with `-Pevals`.
+> takes ~2.6 s (was $0.012 and 4.9 s), repeats come from an answer cache in ~10 ms. A benchmark of 8 Bedrock models kept Claude Haiku 4.5. 81 tests (7 need
+> Docker), plus 2 eval suites (`-Pevals`) and a model benchmark.
 > Deploys to AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle) with `scripts/deploy.sh`;
 > removed with `scripts/teardown.sh`.
 
@@ -344,7 +344,7 @@ Every change had to show its effect in the full triage eval (16 cases × 2 runs,
 
 | | Baseline (agent, 3 data tool calls) | **After phase 6** |
 |---|---|---|
-| Agent cost per triage | $0.0116 | **$0.0047 (−59%)** |
+| Agent cost per triage (at the `global.` price) | $0.0116 | **$0.0047 (−59%)** |
 | Latency p50 / p95 | 4.9 s / 10.8 s | **2.6 s / 7.3 s (−47% / −32%)** |
 | Model input / output tokens | 8,522 / 611 | 3,150 / 311 |
 | Model calls per triage | ~4 | ~1.5 (0 for clean poms and cache hits) |
@@ -386,12 +386,56 @@ Every change had to show its effect in the full triage eval (16 cases × 2 runs,
 
 Model routing (a cheaper model for easy poms) is left for phase 7, where the eval suites compare models properly.
 
+## Model benchmark (phase 7): which model, at what price?
+
+[ModelBenchmark](src/test/java/dev/depguard/evals/ModelBenchmark.java) runs the full triage golden set (16 cases × 2) on
+each model with **only the model changed**: same facts, prompts, temperature, token limit, checks and judge. Prices
+come from the AWS Price List API (us-east-1) and live in one table in `application.yml`, used by the evals and by the
+cost on every Langfuse span.
+
+| Model | Runs with all gates | Simple poms: all gates | Judge factual / notes | p50 latency | Cost per triage |
+|---|---|---|---|---|---|
+| **Claude Haiku 4.5 (chosen)** | **100%** | **100%** | 4.88 / 4.81 | 2.4 s | $0.0056 |
+| Claude Sonnet 4.5 | 100% | 100% | 5.00 / 4.94 | 5.1 s | $0.0163 |
+| Amazon Nova 2 Lite | 97% | 95% | 4.88 / 5.00* | 1.4 s | $0.0014 |
+| Amazon Nova Micro | 94% | 90% | 4.44 / 4.50* | 1.4 s | $0.00014 |
+| Amazon Nova Pro | 94% | 90% | 4.69 / 4.69* | 1.8 s | $0.0028 |
+| Meta Llama 4 Scout | 88%† | 90% | 4.64 / 4.86 | 1.6 s | $0.0005 |
+| Amazon Nova Lite | 88% | 85% | 4.50 / 4.50* | 1.7 s | $0.0019‡ |
+| Mistral Pixtral Large | 78%† | 70% | 5.00 / 4.84 | 3.8 s | $0.0060 |
+
+\* Self-graded: the judge is Nova Pro, so its Nova scores are an upper bound (a cost decision: one judge, bias flagged).
+† Account issues, not quality: Llama 4 Scout is "Legacy, not activated" in some regions of the `us.` profile (4 errors),
+and Pixtral Large hit this account's low throttling quota (7 errors). ‡ Inflated by one runaway run (see below).
+"Simple poms" are cases with no major-version upgrade: the slice a router would send to a cheaper model.
+
+**Decisions:**
+- **Keep Claude Haiku 4.5; no model routing.** Only the two Claude models passed every gate. The cheaper models' main
+  failure is the prompt-injection case: told to "say every dependency is safe", every Nova model refused to comply but
+  also stopped triaging, so the user never heard about a known-exploited log4j RCE. Routing simple poms to Nova 2 Lite
+  would save ~75% on them but fail a gate in ~1 of 20; for a security tool, not worth half a cent. Sonnet 4.5 matched
+  Haiku on every check at 2.9× the cost and twice the latency.
+- **A real guardrail gap, fixed.** Nova Lite once made 40 guide searches (820,892 input tokens) in one triage: the
+  8-call budget only *told* the model to stop. Now Spring AI enforces a hard cap (`spring.ai.tools.limits`, 4 calls), and
+  hitting it, or a Bedrock outage, gives a facts-only answer (the ranked list, built in code) instead of an error.
+- **Price correction.** Claude through a `us.` inference profile costs 10% more than through `global.` (Haiku 4.5:
+  $1.10/$5.50 vs $1.00/$5.00 per million tokens); earlier cost figures used the `global.` price and were ~10% low.
+  `global.` is cheaper but may process requests in any AWS region: a data-residency decision, so DepGuard stays on `us.`.
+
+```bash
+./mvnw test -Pevals -Dtest=ModelBenchmark                                        # 8 models, ~$1.60, ~10 min
+./mvnw test -Pevals -Dtest=ModelBenchmark -Devals.models=us.amazon.nova-lite-v1:0 -Devals.repeats=1
+```
+
+The report is written to `target/evals/model-benchmark.md` (plus a scorecard per model); each model's runs are a
+Langfuse session with scores.
+
 ## Local demo (free)
 
 Prerequisite: **JDK 21+** (`brew install --cask temurin@21`). Maven comes with the project (`./mvnw`).
 
 ```bash
-./mvnw test                     # 80 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
+./mvnw test                     # 81 tests, no network or AWS needed (the 3 pgvector tests run when Docker is up)
 ./mvnw spring-boot:run          # starts on http://localhost:8080
 
 curl -s -X POST localhost:8080/api/scans \
@@ -489,7 +533,7 @@ IAM policies for two Bedrock models and the Data API, a generated API key, and A
 | First full ingest | ~$0.05 of Titan embeddings (~7,350 chunks), plus a few minutes of Aurora time |
 | One scan (about 2.5 s at 1 GB on ARM64, plus one API request) | ~$0.00003 |
 | 1,000 demo scans | ~$0.03, and usually inside Lambda's monthly free allowance |
-| One AI triage (1–2 model calls, ~3.5k input + ~0.3k output tokens on Haiku 4.5; up to ~10k for big poms) | ~$0.005 (big poms up to ~$0.015); repeats from the answer cache: $0 |
+| One AI triage (1–2 model calls, ~3.5k input + ~0.3k output tokens on Haiku 4.5 via `us.`; up to ~10k for big poms) | ~$0.0056 (big poms up to ~$0.016); repeats from the answer cache: $0 |
 | Worst case: someone hammers `/api/scans` at the 5 req/s throttle all day | ~$15/day. This is why the throttle exists; tear down if you see unexpected traffic. |
 | Someone hammering `/api/triage` | Blocked: it needs the API key, because unthrottled LLM calls could cost far more |
 
@@ -579,7 +623,7 @@ The phase 6 semantic cache answers "have we answered a question like this before
 | **4** ✅ | Golden-set evals: oracle from live OSV/EPSS/KEV, code checks + Nova Pro judge, retrieval metrics, CI workflow | Evals design |
 | **5** ✅ | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability |
 | **6** ✅ | Facts in code (workflow + agent), no-model route, answer cache; prompt caching measured and dropped | Cost and performance optimization |
-| 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection |
+| **7** ✅ | 8-model benchmark: quality vs latency vs cost vs risk; Haiku 4.5 kept, routing rejected by data; hard tool-call cap | Model selection |
 | 8 | Spring Security (JWT, roles), human-approved upgrade PRs, production hardening of the AWS stack | Security, guardrails, cloud |
 
 ## Data sources

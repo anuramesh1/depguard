@@ -177,7 +177,7 @@ text(50, 918, "Quality: ./mvnw test -Pevals  —  golden sets, code checks + an 
 
 # ------------------------------------------------------------------ story 3: later phases
 panel(810, 720, 760, 210, "③  Coming in later phases", "#FBFAFF", PURPLE, dashed=True)
-badge(940, 805, "7", ["Model benchmark + routing", "phase 7 · quality vs cost"], PURPLE, "#F3F0FF")
+badge(940, 805, "8", ["Secrets Manager, alarms", "phase 8 · production hardening"], PURPLE, "#F3F0FF")
 badge(1190, 805, "8", ["Human-approved upgrade PRs", "phase 8 · GitHub"], PURPLE, "#F3F0FF")
 icon("springsecurity", 1440, 815, ["Spring Security", "phase 8 · JWT + roles"], size=46, label_size=14)
 

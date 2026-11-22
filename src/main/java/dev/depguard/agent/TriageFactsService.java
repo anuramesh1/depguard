@@ -182,7 +182,7 @@ public class TriageFactsService {
     }
 
     /** "2.9.8" → "2.18.11" is not a major upgrade; "5.3.20" → "6.1.14" is. */
-    static boolean isMajorUpgrade(String current, String recommended) {
+    public static boolean isMajorUpgrade(String current, String recommended) {
         if (current == null || recommended == null) {
             return false;
         }

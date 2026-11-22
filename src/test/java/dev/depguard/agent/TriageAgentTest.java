@@ -147,6 +147,25 @@ class TriageAgentTest {
     }
 
     @Test
+    void aRunawayToolLoopEndsInAFactsOnlyAnswerNotAnError() {
+        when(factsService.gather(anyList())).thenReturn(TEXT4SHELL);
+        ChatModel loopingModel = prompt -> {
+            throw new org.springframework.ai.model.tool.ToolCallLimitExceededException("searchAdvisories", 4, null);
+        };
+        TriageAgent agent = new TriageAgent(ChatClient.builder(loopingModel), new PomParser(), factsService,
+                mock(KnowledgeTools.class), AiTracing.noop(), JsonMapper.builder().build(),
+                new ClassPathResource("prompts/triage-system.st"), new ClassPathResource("prompts/triage-user.st"),
+                "fake-model", AnswerCache.disabled());
+
+        TriageResult result = agent.triage(POM, null);
+
+        assertThat(result.answer())
+                .contains("1. org.apache.commons:commons-text:1.9 → 1.10.0", "EPSS up to 99.93%", "CVE-2022-42889",
+                        "AI explanation is unavailable", "Not checked (version unknown): org.slf4j:slf4j-api");
+        assertThat(result.inputTokens()).isZero();
+    }
+
+    @Test
     void emptyPomIsAnsweredWithoutTheModel() {
         FakeModel model = new FakeModel("should not be used");
 

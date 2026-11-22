@@ -36,8 +36,8 @@ for example that spring-web 5 → 6 also needs Java 17+ and the `javax` → `jak
 | **RAG** | Hybrid search over every OSV Maven advisory and official migration guides: pgvector + Postgres full-text + Reciprocal Rank Fusion, in one SQL query |
 | **Caching** | Answer cache in pgvector (exact + similar question, 6 h TTL, versioned key); KEV feed cached 6 h; Bedrock prompt caching measured and not worth it after the workflow change |
 | **Batching** | One OSV batch query per pom; an ingest run that embeds new or changed advisories in bulk (content hashes skip the rest) |
-| **Model routing** | A small model for classifying and extracting, a larger one for the final triage reasoning |
-| **Model selection** | A benchmark harness runs one golden set on several models: accuracy, p95 latency, cost per query, hallucination rate |
+| **Model routing** | Evaluated in phase 7 and rejected: no cheaper model passed every safety gate on simple poms; code does the work a small model would have done |
+| **Model selection** | `ModelBenchmark` runs the golden set on 8 Bedrock models: gates, tracked checks, judge scores, p50/p95 latency, cost per triage, errors |
 | **Observability** | Spring AI Micrometer observations → OpenTelemetry spans → Langfuse: one trace per triage with model calls (prompt, tokens, cost), tool calls, retrieval and guardrail warnings; eval scores attached |
 | **Security** | JWT auth with roles: `VIEWER` can scan, `MAINTAINER` can approve upgrade PRs |
 | **Data** | Aurora Serverless v2 (Postgres + pgvector) through the RDS Data API |
@@ -75,8 +75,8 @@ Each phase ends with something that can be demoed.
 | 4 | Golden sets (16 triage poms, 30 retrieval queries), oracle from live data, code checks + LLM judge, CI workflow | Evals | ✅ Done |
 | 5 | Langfuse traces: agent, model calls (prompt, tokens, cost), tools, retrieval; eval scores per trace | LLM observability | ✅ Done |
 | 6 | Facts in code (workflow + agent), no-model route, answer cache; prompt caching measured and dropped: −59% cost, −47% latency, quality up | Cost and performance | ✅ Done |
-| 7 | Model benchmark: quality vs latency vs cost vs risk | Model selection | ⏭️ Next |
-| 8 | Spring Security, human-approved upgrade PRs, production hardening | Security, guardrails | |
+| 7 | 8-model benchmark (quality, latency, cost, risk); Haiku 4.5 kept, routing rejected by data | Model selection | ✅ Done |
+| 8 | Spring Security, human-approved upgrade PRs, production hardening | Security, guardrails | ⏭️ Next |
 
 ## Decisions
 
@@ -97,4 +97,6 @@ Each phase ends with something that can be demoed.
    (after an eval exposed broken CVE-ID search), and the ranking rule followed in 100% of runs (from 97%).
 6. **Cheaper and faster, with better answers.** Moving fixed lookups from model tool calls into code cut cost per triage
    59% and latency 47%, and every eval check reached 100%; repeated questions come from an answer cache in ~10 ms.
-7. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.
+7. **Model choice by evidence.** Eight models on the same golden set: only Claude passed every gate; cheaper models
+   failed the prompt-injection case. The benchmark also exposed an advisory-only tool budget, now a hard limit.
+8. **Secure by default.** The pom parser rejects DOCTYPE declarations (blocks XXE), and upstream errors return 503 without leaking internal details.

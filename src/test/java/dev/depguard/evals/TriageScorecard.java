@@ -13,19 +13,19 @@ import java.util.function.ToDoubleFunction;
 /** Turns individual eval runs into the numbers that matter: pass rates, judge scores, latency and cost. */
 final class TriageScorecard {
 
-    // Approximate Bedrock on-demand prices, USD per million tokens (us-east-1). Check current prices.
-    static final double AGENT_INPUT_PRICE = 1.00;   // Claude Haiku 4.5
-    static final double AGENT_OUTPUT_PRICE = 5.00;
-    static final double JUDGE_INPUT_PRICE = 0.80;   // Amazon Nova Pro
-    static final double JUDGE_OUTPUT_PRICE = 3.20;
-
     /**
      * One agent run of one case, with its checks and (optionally) the judge's verdict. Saved to
      * triage-scorecard.json with everything a re-grade needs (answer, unverified CVEs), so it can be replayed.
+     * Costs come from the price table in application.yml (ModelPricing), the same one Langfuse spans use.
      */
-    record Run(String caseId, int repeat, long durationMs, int inputTokens, int outputTokens, int toolCalls,
+    record Run(String caseId, int repeat, String model, long durationMs, int inputTokens, int outputTokens, int toolCalls,
                List<Check> checks, Verdict verdict, int judgeInputTokens, int judgeOutputTokens, String answer,
-               List<String> unverifiedCves, String traceId, long cacheReadTokens, long cacheWriteTokens) {
+               List<String> unverifiedCves, String traceId, long cacheReadTokens, long cacheWriteTokens,
+               double agentCostUsd, double judgeCostUsd, String error) {
+
+        boolean gatesPassed() {
+            return checks.stream().filter(Check::gate).allMatch(Check::passed);
+        }
     }
 
     /** Pass rate of one check across the runs where it applied. */
@@ -72,8 +72,11 @@ final class TriageScorecard {
     String markdown() {
         StringBuilder md = new StringBuilder();
         md.append("# Triage eval scorecard\n\n");
-        md.append(String.format(Locale.ROOT, "%d runs (%d cases). Agent: Claude Haiku 4.5. Judge: %s.%n%n",
-                runs.size(), runs.stream().map(Run::caseId).distinct().count(), TriageJudge.JUDGE_MODEL));
+        md.append(String.format(Locale.ROOT, "%d runs (%d cases). Agent model(s): %s. Judge: %s.%n%n",
+                runs.size(), runs.stream().map(Run::caseId).distinct().count(),
+                runs.stream().map(Run::model).filter(m -> m != null && !m.startsWith("none")).distinct().sorted()
+                        .reduce((a, b) -> a + ", " + b).orElse("none"),
+                TriageJudge.JUDGE_MODEL));
         if (replayed) {
             md.append("**Replayed:** saved answers were re-graded; the agent was not called. Latency and agent cost below")
               .append(" are from the original run.\n\n");
@@ -95,12 +98,8 @@ final class TriageScorecard {
         }
 
         long[] latencies = runs.stream().mapToLong(Run::durationMs).sorted().toArray();
-        // Cached tokens are reported separately from inputTokens: reads at 0.1x, writes at 1.25x the input price.
-        double agentCost = runs.stream().mapToDouble(r -> (r.inputTokens() * AGENT_INPUT_PRICE
-                + r.outputTokens() * AGENT_OUTPUT_PRICE + r.cacheReadTokens() * AGENT_INPUT_PRICE * 0.1
-                + r.cacheWriteTokens() * AGENT_INPUT_PRICE * 1.25) / 1e6).sum();
-        double judgeCost = runs.stream().mapToDouble(r ->
-                (r.judgeInputTokens() * JUDGE_INPUT_PRICE + r.judgeOutputTokens() * JUDGE_OUTPUT_PRICE) / 1e6).sum();
+        double agentCost = runs.stream().mapToDouble(Run::agentCostUsd).sum();
+        double judgeCost = runs.stream().mapToDouble(Run::judgeCostUsd).sum();
         md.append("\n## Latency and cost\n\n| Metric | Value |\n|---|---|\n");
         md.append(String.format(Locale.ROOT, "| Latency p50 / p95 | %.1f s / %.1f s |%n",
                 percentile(latencies, 50) / 1000.0, percentile(latencies, 95) / 1000.0));
