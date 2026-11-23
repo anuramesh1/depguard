@@ -98,7 +98,11 @@ text(W / 2, 84, "A pom.xml goes in; vulnerable dependencies ranked by risk, safe
 panel(30, 110, 1540, 590, "①  Scanning and triaging a pom.xml  —  a scan ~2 s, an AI triage ~2.6 s (cached: ~10 ms)",
       "#F8FBFF", BLUE)
 
-icon("users", 85, 320, ["Developer", "curl · IntelliJ"], size=72)
+icon("users", 85, 320, ["Developer", "curl + token"], size=72)
+
+# Login: Cognito issues a 60-minute JWT; API Gateway and Spring Security both check it
+arrow("M95 398 L 100 440", PURPLE, "login", (112, 425), anchor="start")
+badge(100, 476, "JWT", ["Amazon Cognito", "60-min token", "2 roles"], PURPLE, "#F3F0FF", r=30)
 arrow("M125 310 L 247 310", BLUE, "pom.xml", (186, 298))
 arrow("M247 332 L 125 332", BLUE, "report", (186, 352))
 icon("api-gateway", 285, 320, ["Amazon API Gateway", "HTTP API · HTTPS", "throttled 5 req/s", "JWT authorizer"], size=60)
@@ -108,13 +112,14 @@ arrow("M320 320 L 376 320", BLUE)
 panel(380, 150, 800, 430, "", "#FFF4E6", ORANGE)
 image("lambda", 398, 164, 42)
 text(452, 182, "AWS Lambda  ·  Java 21  ·  ARM64  ·  SnapStart", size=17, color=ORANGE, weight="bold", anchor="start")
-text(452, 203, "alias “live” → newest version  ·  Spring Boot runs inside, unchanged", size=13.5, anchor="start")
+text(452, 203, "alias “live” → newest version  ·  Spring Boot runs inside, unchanged (locally: Tomcat :8080)",
+     size=13.5, anchor="start")
 image("spring", 1128, 164, 36)
 
 # Row 1: request handling and the deterministic scan
 step(400, 232, 240, 80, "StreamLambdaHandler", ["API Gateway event →", "servlet request"], ORANGE, "#FFFFFF")
 arrow("M640 272 L 666 272", ORANGE)
-step(670, 232, 240, 80, "Controllers", ["POST /api/scans", "/api/triage · /api/upgrades"], ORANGE, "#FFFFFF")
+step(670, 232, 240, 80, "Controllers", ["/api/scans · /api/triage", "/api/knowledge · /api/upgrades"], ORANGE, "#FFFFFF")
 arrow("M910 272 L 936 272", ORANGE)
 step(940, 232, 220, 80, "ScanService", ["parses the pom (no XXE),", "ranks, picks upgrades"], ORANGE, "#FFFFFF")
 
@@ -123,19 +128,22 @@ step(670, 352, 240, 80, "TriageAgent", ["facts in code · answer cache", "1 mode
 step(940, 352, 220, 80, "OsvClient", ["1 batch query, then", "parallel fetches"], ORANGE, "#FFFFFF")
 arrow("M790 312 L 790 348", ORANGE)
 arrow("M1050 312 L 1050 348", ORANGE)
-text(405, 345, ["Locally: ./mvnw spring-boot:run", "serves the same controllers on", "Tomcat :8080; Postgres in Docker."],
-     size=13.5, color=GREY, anchor="start")
+# Human-approved upgrades: propose (facts in code, no model), a second MAINTAINER approves, then a GitHub PR
+step(400, 352, 240, 80, "UpgradeService", ["propose · four-eyes approve", "→ branch, commit, PR"], ORANGE, "#FFFFFF")
+arrow("M700 312 L 700 332 L 520 332 L 520 348", ORANGE)
+arrow("M440 432 L 440 452 L 300 452 L 300 576", GREEN, "HTTPS", (310, 520), anchor="start")
+step(170, 580, 200, 80, "GitHub API", ["pull request only;", "token: demo repo only"], GREEN, "#EBFBEE")
 
 # Row 3: exploit-signal clients, used only by the agent's tools
 step(940, 472, 220, 80, "EpssClient · KevClient", ["batched lookup,", "KEV feed cached 6 h"], ORANGE, "#FFFFFF")
 arrow("M910 372 L 925 372 L 925 292 L 936 292", PURPLE)   # tool: findVulnerabilities -> the scan
 arrow("M910 412 L 925 412 L 925 512 L 936 512", PURPLE)   # tools: EPSS + KEV
-text(780, 458, ["code: OSV, EPSS,", "KEV (ranked)", "model tool:", "searchAdvisories"],
-     size=12.5, color=PURPLE, anchor="end")
+text(800, 470, ["code: OSV, EPSS,", "KEV (ranked)", "model tool:", "searchAdvisories"],
+     size=12.5, color=PURPLE, anchor="start")
 
 # Row 3, left: the RAG retriever (tool: searchAdvisories)
 step(400, 472, 240, 80, "HybridRetriever", ["Titan query embedding,", "pgvector + full-text, RRF"], PURPLE, "#F3F0FF")
-arrow("M670 420 L 520 420 L 520 468", PURPLE)
+arrow("M680 432 L 680 452 L 560 452 L 560 468", PURPLE)
 
 # The model and the knowledge base, below the Lambda
 arrow("M790 432 L 790 612", PURPLE, "Converse API", (780, 600), anchor="end")
@@ -145,7 +153,7 @@ text(830, 656, "Claude Haiku 4.5  ·  Titan v2 (embeddings)  ·  IAM role", size
 arrow("M520 552 L 520 612", PURPLE, "RDS Data API", (510, 600), anchor="end")
 image("aurora", 495, 615, 50)
 text(555, 636, "Aurora Serverless v2", size=16, color=PURPLE, weight="bold", anchor="start")
-text(555, 656, "pgvector · answer cache", size=13.5, anchor="start")
+text(555, 656, "pgvector · cache · proposals", size=13.5, anchor="start")
 
 # Right column: logs and the open data sources
 arrow("M1180 252 L 1351 252", GREY, "logs", (1265, 240), dashed=True)

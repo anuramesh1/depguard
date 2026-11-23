@@ -5,22 +5,33 @@ Give it a `pom.xml`; it tells you which dependencies are dangerous, why, and wha
 
 Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**. Each class holds one concept, so the code is easy to read.
 
-> **Status: all 8 phases done.** A scan API (no LLM), an AI triage agent with tool calling, a hybrid-search (RAG)
-> knowledge base of every OSV Maven advisory plus official migration guides, quality evals (golden sets graded by
-> code checks and an LLM judge), LLM tracing to Langfuse, and measured cost/latency work: a triage now costs ~$0.005 and
-> takes ~2.6 s (was $0.012 and 4.9 s), repeats come from an answer cache in ~10 ms. A benchmark of 8 Bedrock models kept Claude Haiku 4.5. Phase 8 adds Cognito logins with
-> VIEWER/MAINTAINER roles, human-approved upgrade pull requests (four-eyes), secrets in SSM Parameter Store, alarms and a
-> budget. 91 tests (the Postgres ones need Docker), plus 2 eval suites (`-Pevals`) and a model benchmark.
-> Deploys to AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle) with `scripts/deploy.sh`;
-> removed with `scripts/teardown.sh`.
+> **Status: all 8 phases done, deployed and verified on AWS.**
+> - **What it does:** a scan API (no LLM); an AI triage agent; a hybrid-search (RAG) knowledge base of every OSV Maven
+>   advisory plus official migration guides; upgrade pull requests that a second person must approve.
+> - **How it's checked:** golden-set evals graded by code checks and an LLM judge, traces in Langfuse, and a benchmark
+>   of 8 Bedrock models (Claude Haiku 4.5 kept).
+> - **Cost and speed:** a triage costs ~$0.005 and takes ~2.6 s (was $0.012 and 4.9 s); repeats come from a cache in ~10 ms.
+> - **Security:** Cognito logins with VIEWER/MAINTAINER roles, secrets in SSM Parameter Store, alarms and a budget.
+> - **Tests:** 92 (the Postgres ones need Docker), plus 2 eval suites (`-Pevals`).
+> - **Runs on:** AWS serverless (Lambda + SnapStart, Aurora Serverless v2 that pauses when idle), about $0.50/month
+>   idle. `scripts/deploy.sh` to deploy, `scripts/teardown.sh` to remove.
+
+**Contents:** [Architecture](#architecture) · [Scan](#scan-api-phase-1-post-apiscans) · [AI triage](#ai-triage-phases-2-and-6-post-apitriage) ·
+[Knowledge base](#knowledge-base-with-hybrid-search-phase-3-get-apiknowledgesearch) · [Evals](#evals-phase-4-how-good-are-the-answers) ·
+[Observability](#observability-phase-5-what-happened-inside-each-triage) · [Cost and performance](#cost-and-performance-phase-6-measured-before-and-after) ·
+[Model benchmark](#model-benchmark-phase-7-which-model-at-what-price) · [Security and upgrades](#security-and-human-approved-upgrades-phase-8) ·
+[Run locally](#local-demo-free) · [Run on AWS](#cloud-demo-on-aws-serverless-about-050month-while-idle) ·
+[Production alternatives](#design-alternatives-taking-this-to-production) · [Roadmap](#roadmap)
 
 ---
 
 ## Architecture
 
-![DepGuard architecture on AWS, drawn with service icons: a developer sends a pom.xml to Amazon API Gateway, which invokes a Java 21 Lambda with SnapStart running Spring Boot. Inside it, StreamLambdaHandler passes the request to the controllers. /api/scans goes to ScanService and OsvClient, which calls OSV.dev. /api/triage goes to TriageAgent, which calls Claude on Amazon Bedrock and uses four tools: the scan, EpssClient and KevClient (FIRST EPSS and CISA KEV), and HybridRetriever, which embeds the question with Titan and searches Aurora Serverless v2 (pgvector + full-text) through the RDS Data API. Logs go to CloudWatch. Deploying: Maven builds the zip, Terraform uploads it through S3 to a new SnapStart version, then a health check. An ingest run fills the knowledge base from the OSV export and migration guides. Traces go to Langfuse Cloud over OTLP. A security panel shows Cognito logins (JWT checked by API Gateway and Spring Security, VIEWER and MAINTAINER roles), four-eyes upgrade pull requests on GitHub, secrets in SSM Parameter Store, and alarms with a budget.](docs/architecture/depguard-architecture-aws.png)
+![DepGuard architecture on AWS, drawn with service icons: a developer logs in with Amazon Cognito and sends a pom.xml with the token to Amazon API Gateway, which invokes a Java 21 Lambda with SnapStart running Spring Boot. Inside it, StreamLambdaHandler passes the request to the controllers. /api/scans goes to ScanService and OsvClient, which calls OSV.dev. /api/triage goes to TriageAgent, which calls Claude on Amazon Bedrock and uses four tools: the scan, EpssClient and KevClient (FIRST EPSS and CISA KEV), and HybridRetriever, which embeds the question with Titan and searches Aurora Serverless v2 (pgvector + full-text) through the RDS Data API. /api/upgrades goes to UpgradeService, which opens pull requests through the GitHub API. Logs go to CloudWatch. Deploying: Maven builds the zip, Terraform uploads it through S3 to a new SnapStart version, then a health check. An ingest run fills the knowledge base from the OSV export and migration guides. Traces go to Langfuse Cloud over OTLP. A security panel shows Cognito logins (JWT checked by API Gateway and Spring Security, VIEWER and MAINTAINER roles), four-eyes upgrade pull requests on GitHub, secrets in SSM Parameter Store, and alarms with a budget.](docs/architecture/depguard-architecture-aws.png)
 
-1. **Request:** a client posts a `pom.xml` over HTTPS to **API Gateway**, which throttles it to 5 requests/s, checks the Cognito token on paid routes, and invokes the Lambda's `live` alias.
+1. **Request:** the user logs in with **Amazon Cognito** (`scripts/token.sh`) and posts a `pom.xml` with the token over
+   HTTPS to **API Gateway**, which throttles it to 5 requests/s, rejects missing or invalid tokens (every route except
+   the health check), and invokes the Lambda's `live` alias.
 2. **Inside Lambda:** `StreamLambdaHandler` turns the API Gateway event into a normal servlet request, so the same Spring controller runs
    on Lambda and locally. `ScanService` parses the pom with `PomParser`, asks **OSV.dev** about every dependency through `OsvClient`
    (one batched call, then parallel fetches on virtual threads), and returns the report ranked by severity.
@@ -35,7 +46,9 @@ Built with **Java 21, Spring Boot 4.1** and **Spring AI** on **Amazon Bedrock**.
    SnapStart snapshots the started app, so cold starts don't pay the Spring Boot startup cost.
 5. **Tracing:** each triage is one trace in **Langfuse**: the agent step, every model call (prompt, answer, tokens,
    cost), every tool call and retrieval. Spring AI's Micrometer observations become OpenTelemetry spans, sent over OTLP.
-6. **Locally:** `./mvnw spring-boot:run` serves the same controller on Tomcat at port 8080, and the knowledge base is
+6. **Upgrades:** `UpgradeService` reads the `pom.xml` of a GitHub repository, proposes version bumps, and, once a
+   second MAINTAINER approves, opens a pull request through the **GitHub API**.
+7. **Locally:** `./mvnw spring-boot:run` serves the same controller on Tomcat at port 8080, and the knowledge base is
    the docker-compose Postgres. There is no API Gateway or Lambda handler locally.
 
 Panel ③ is the security and guardrail layer (phase 8): see [Security and human-approved upgrades](#security-and-human-approved-upgrades-phase-8).
@@ -43,7 +56,7 @@ Panel ③ is the security and guardrail layer (phase 8): see [Security and human
 <details>
 <summary>Simple box version of the same diagram</summary>
 
-![DepGuard architecture as plain boxes: client, API Gateway, Lambda with StreamLambdaHandler, Controllers, TriageAgent, ScanService, HybridRetriever, EpssClient/KevClient and OsvClient; externals Amazon Bedrock, Aurora Serverless v2, EPSS/CISA KEV, OSV.dev and CloudWatch; below, the deploy and ingest steps and the security layer (Cognito, Spring Security, upgrade PRs, Parameter Store, alarms).](docs/architecture/depguard-architecture.svg)
+![DepGuard architecture as plain boxes: client with Amazon Cognito login, API Gateway, Lambda with StreamLambdaHandler, Controllers, TriageAgent, ScanService, HybridRetriever, EpssClient/KevClient, OsvClient and UpgradeService; externals Amazon Bedrock, Aurora Serverless v2, EPSS/CISA KEV, OSV.dev, GitHub, Langfuse and CloudWatch; below, the deploy and ingest steps and the security layer (Cognito, Spring Security, upgrade PRs, Parameter Store, alarms).](docs/architecture/depguard-architecture.svg)
 
 </details>
 
@@ -104,11 +117,11 @@ Until phase 6 the model fetched the OSV, EPSS and KEV data itself with three too
 | Prompt templates kept out of code: role, steps, rules, output format | [prompts/triage-system.st](src/main/resources/prompts/triage-system.st), [prompts/triage-user.st](src/main/resources/prompts/triage-user.st) |
 | Per-request state passed to shared tools through `ToolContext` | [agent/TriageSession.java](src/main/java/dev/depguard/agent/TriageSession.java) |
 | Guardrail: every CVE in the answer must come from the facts or a search result, checked in code | [agent/CveCitationGuard.java](src/main/java/dev/depguard/agent/CveCitationGuard.java) |
-| Guardrail: advisory text is treated as data; at most 8 tool calls per request | system prompt, `TriageSession.MAX_TOOL_CALLS` |
+| Guardrail: advisory text is treated as data; a hard cap of 4 tool calls, enforced by Spring AI, with a facts-only fallback answer | system prompt, `spring.ai.tools.limits` in `application.yml`, `TriageAgent` |
 | Token-aware facts: top 5 advisories per dependency, summaries truncated, EPSS rounded | `TriageFactsService` |
 | Feeds degrade gracefully: an outage becomes a note to the model, not a failed request | `TriageFactsService` |
 | Caching a 1.5 MB feed in memory with a TTL | [exploit/KevClient.java](src/main/java/dev/depguard/exploit/KevClient.java) |
-| Cost control: login (JWT) on the paid endpoints, `max-tokens` cap, low temperature, hard tool-call limit | [security/SecurityConfig.java](src/main/java/dev/depguard/security/SecurityConfig.java), `application.yml` |
+| Cost control: login (JWT) on every endpoint but health, `max-tokens` cap, low temperature, hard tool-call limit | [security/SecurityConfig.java](src/main/java/dev/depguard/security/SecurityConfig.java), `application.yml` |
 | Tested without a model: a fake `ChatModel` checks prompts and the guardrail | [TriageAgentTest](src/test/java/dev/depguard/agent/TriageAgentTest.java) |
 
 Sample answer for `samples/vulnerable-pom.xml` (phase 2 design, live run: 3 tool calls, ~12 s, ~9.6k input + 1.2k output tokens, ~$0.015):
@@ -189,7 +202,7 @@ for full security, although 2.18.11 already fixes the listed CVEs. Retrieval can
 RAG needs evals, not just a guardrail.
 
 **Why not Spring AI's `PgVectorStore`:** it needs JDBC, and on AWS the app reaches Aurora through the Data API (HTTPS + IAM)
-to avoid putting the Lambda in a VPC with a NAT gateway (~$32/month). Hand-written SQL also keeps the RRF query visible.
+to avoid putting the Lambda in a VPC with a NAT gateway (~$33/month). Hand-written SQL also keeps the RRF query visible.
 
 ## Evals (phase 4): how good are the answers?
 
@@ -296,7 +309,7 @@ depguard.triage                      agent      input: question + dependencies �
 
 **Turning it on:** create a Langfuse project, then put `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and
 `LANGFUSE_HOST` (EU or US region; `LANGFUSE_BASE_URL`, the name in Langfuse's own snippet, works too; quotes are fine) in `.env`. Without keys, tracing is off and nothing else changes.
-`scripts/deploy.sh` passes the same keys to Lambda. Every `/api/triage` response includes its `traceId`.
+`scripts/deploy.sh` stores the same keys in Parameter Store for the Lambda. Every `/api/triage` response includes its `traceId`.
 
 | Concept | Where |
 |---|---|
@@ -386,7 +399,7 @@ Every change had to show its effect in the full triage eval (16 cases × 2 runs,
    HTTP/2 connection). `OsvClient` now allows at most 16 requests in flight, app-wide; a test fires 100 at once and checks
    the peak. One big pom or a few simultaneous users could have hit this in production.
 
-Model routing (a cheaper model for easy poms) is left for phase 7, where the eval suites compare models properly.
+Model routing (a cheaper model for easy poms) was tested in phase 7, below, and rejected.
 
 ## Model benchmark (phase 7): which model, at what price?
 
@@ -464,7 +477,7 @@ evals simple; the controller tests run with security on.
 |---|---|
 | Resource server: JWT validation, Cognito groups → roles, per-endpoint rules, problem-JSON 401/403 | [security/SecurityConfig.java](src/main/java/dev/depguard/security/SecurityConfig.java) |
 | User pool (Lite tier, no self sign-up), VIEWER/MAINTAINER groups, public app client | [infra/serverless/cognito.tf](infra/serverless/cognito.tf) |
-| JWT authorizer on the paid routes | [infra/serverless/api.tf](infra/serverless/api.tf) |
+| JWT authorizer on every route except the health check | [infra/serverless/api.tf](infra/serverless/api.tf) |
 | Role checks tested with real filter chains | [SecurityConfigTest](src/test/java/dev/depguard/security/SecurityConfigTest.java), `TriageControllerTest` |
 
 ### Upgrade pull requests, approved by a human
@@ -472,7 +485,7 @@ evals simple; the controller tests run with security on.
 DepGuard can turn a triage into a pull request on a GitHub repository, but **never on its own**:
 
 ```
-VIEWER    POST /api/upgrades            reads pom.xml from GitHub, triages it, stores the proposed bumps + a diff  (PENDING)
+any role  POST /api/upgrades            reads pom.xml from GitHub, gathers the facts (no model), stores the bumps + a diff  (PENDING)
 MAINTAINER POST /api/upgrades/{id}/approve   (a different person)  → branch depguard/upgrade-xxxxxxxx, commit, pull request
                                                                     (APPROVED_PR_OPENED, with the PR link)
 MAINTAINER POST /api/upgrades/{id}/reject                          → REJECTED, nothing happens on GitHub
@@ -517,7 +530,7 @@ reload. Teardown deletes them.
 Prerequisite: **JDK 21+** (`brew install --cask temurin@21`). Maven comes with the project (`./mvnw`).
 
 ```bash
-./mvnw test                     # 91 tests, no network or AWS needed (the Postgres tests run when Docker is up)
+./mvnw test                     # 92 tests, no network or AWS needed (the Postgres tests run when Docker is up)
 ./mvnw spring-boot:run          # starts on http://localhost:8080
 
 curl -s -X POST localhost:8080/api/scans \
@@ -547,7 +560,7 @@ Without the database the app still runs: knowledge search returns 503, and triag
 
 In IntelliJ: run `DepGuardApplication`, then open [samples/scans.http](samples/scans.http) and click the green arrows.
 
-To run the same container image that goes to AWS: `docker build -t depguard . && docker run -p 8080:8080 depguard`.
+As a container (the image the Fargate alternative uses; the serverless deploy uses a zip): `docker build -t depguard . && docker run -p 8080:8080 depguard`.
 
 Sample output (live data, so the numbers change over time):
 
@@ -577,8 +590,9 @@ scripts/status.sh      # is it deployed? prints the URL and health
 scripts/teardown.sh    # delete everything; asks you to type 'destroy' (or pass --yes)
 
 scripts/users.sh add alice VIEWER         # asks for a password (14+ characters, upper, lower, digit)
-scripts/users.sh add bob MAINTAINER
+scripts/users.sh add bob MAINTAINER       # approving needs a MAINTAINER who isn't the proposer
 TOKEN=$(scripts/token.sh alice)           # a 60-minute access token
+URL=$(terraform -chdir=infra/serverless output -raw url)
 curl -s -X POST "$URL/api/triage" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/xml' \
   --data-binary @samples/vulnerable-pom.xml | jq -r .answer
 ```
@@ -591,15 +605,16 @@ Re-running `scripts/deploy.sh` ships a new version: a new Lambda version is publ
 **Prerequisites:** JDK 21, AWS CLI v2 with credentials (`aws configure` for access keys, `aws sso login` if your profile uses SSO, or `AWS_PROFILE`), Terraform ≥ 1.6.
 Docker isn't needed. Optional: `AWS_REGION` (default `us-east-1`).
 
-**What gets created** ([infra/serverless/](infra/serverless/), 23 resources):
+**What gets created** ([infra/serverless/](infra/serverless/), 42 resources):
 
 ```
-anyone ──HTTPS──► API Gateway HTTP API ──► Lambda alias "live" ──► Lambda (Java 21, ARM64, 1 GB, SnapStart) ──HTTPS──► api.osv.dev
-                  (throttled: 5 req/s,      (newest published         Spring Boot runs inside it unchanged,
-                   burst 10)                  version)                  via StreamLambdaHandler
+user ──HTTPS + JWT──► API Gateway HTTP API ──► Lambda alias "live" ──► Lambda (Java 21, ARM64, 1 GB, SnapStart) ──HTTPS──► api.osv.dev
+                       (JWT authorizer,          (newest published         Spring Boot runs inside it unchanged,
+                        5 req/s, burst 10)          version)                  via StreamLambdaHandler
                                                                         logs → CloudWatch (7-day retention)
                                                                         ──► Amazon Bedrock (Claude, Titan), EPSS, CISA KEV
                                                                         ──► RDS Data API ──► Aurora Serverless v2 (pgvector)
+                                                                        ──► GitHub API (upgrade pull requests)
 ```
 Also: a private S3 bucket that holds the Lambda zip (direct uploads are capped at 50 MB; ours is ~45 MB),
 IAM policies for the Bedrock models, the Data API and the `/depguard/` parameters, a Cognito user pool, four alarms
@@ -627,8 +642,7 @@ with an SNS topic, a budget, and Aurora's own private VPC
 | 1,000 demo scans | ~$0.03, and usually inside Lambda's monthly free allowance |
 | One AI triage (1–2 model calls, ~3.5k input + ~0.3k output tokens on Haiku 4.5 via `us.`; up to ~10k for big poms) | ~$0.0056 (big poms up to ~$0.016); repeats from the answer cache: $0 |
 | Worst case: a stranger floods the URL | Refused at API Gateway (401) without starting a Lambda; at most API Gateway's per-request price (about $1 per million) |
-| Worst case: one of your logged-in users hammers it at the 5 req/s throttle all day | ~$15/day for scans, more for triage. Hence the throttle, the 5-Lambda cap and the budget email |
-| Someone hammering `/api/triage` | Blocked at API Gateway without a valid login; a logged-in user is capped by the throttle and 5 concurrent Lambdas |
+| Worst case: a logged-in user hammers it at the 5 req/s throttle all day | ~$15/day for scans, more for triage; capped by the throttle and 5 concurrent Lambdas, and the budget email warns you |
 | Cognito, Parameter Store, alarms, budget, SNS email | $0 at demo scale |
 
 **Demo security choices** (fine for a demo; see the next section for production):
@@ -660,8 +674,9 @@ Prices are approximate us-east-1 list prices; the UAE (me-central-1) and some ot
 - **Fargate** when traffic is steady (it gets cheaper than Lambda at sustained load), when requests run longer than
   30 s (API Gateway's limit; relevant for long agent runs), or when you need long-lived connections such as streaming chat.
 
-LLM usage is extra and usage-based on either option: about $0.005 per triage on Claude Haiku 4.5 (measured over the eval set; bigger poms up to ~$0.015)
-(measured: ~3.5k tokens in and ~0.3k out across 1-2 model calls), so 1,000 triages cost roughly $5, less with cache hits. Check current Bedrock prices.
+LLM usage is extra and usage-based on either option: about $0.005–0.006 per triage on Claude Haiku 4.5 (measured over
+the eval set: ~3.5k tokens in and ~0.3k out across 1-2 model calls; bigger poms up to ~$0.016), so 1,000 triages cost
+roughly $5–6, less with cache hits. Check current Bedrock prices.
 
 ### The database on serverless (how phase 3 does it)
 
